@@ -1,16 +1,44 @@
-# bevy-game
-For learning Bevy and ECS
+# Bullet Hell Modular Starter (Bevy 0.18 + Avian 0.5 + Firefly)
 
-# License
+This scaffold implements **folder-per-plugin modules** and uses **officially supported** integration patterns:
 
-The source code (including any snippets) is available under one of the following licenses:
+- Avian physics is installed via `PhysicsPlugins::default()` and configured with a length unit (pixels-per-meter).
+- Firefly is installed via `FireflyPlugin`, and the camera has `FireflyConfig`.
+- Bullet hits are processed using Avian **opt-in collision events** via `CollisionEventsEnabled` + `MessageReader<CollisionStart>`.
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or here
-  [https://www.apache.org/licenses/LICENSE-2.0][L1])
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or here
-  [https://opensource.org/licenses/MIT][L2])
+Controls:
+- WASD: move
+- LMB: shoot
 
-[L1]: https://www.apache.org/licenses/LICENSE-2.0
-[L2]: https://opensource.org/licenses/MIT
+> Note: Bullets are implemented as *dynamic* rigid bodies in this starter (physics gives free ricochets).
+> For extremely large bullet counts you can switch to **kinematic bullets** using raycasts/shapecasts.
+> See comments in `bullets/systems.rs`.
 
-You may choose either license at your discretion.
+## Layout
+
+- `src/plugins/<feature>/` — one folder per feature plugin
+- `docs/` — architecture, ADRs, specs, runbooks
+- `tests/` — integration tests (black-box)
+
+## Running
+
+```bash
+cargo run
+```
+
+## Testing
+
+Fast / plugin-local tests:
+
+```bash
+cargo test --lib
+```
+
+Integration tests (black-box):
+
+```bash
+cargo test --test '*'
+```
+
+See `docs/01_testing.md`.
+
