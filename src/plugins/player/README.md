@@ -2042,6 +2042,606 @@ Instead, test invariants at the message layer:
 
 Then add a single “smoke test” for UI wiring (optional) once everything works.
 
+---
+
+## 9.5 Inventory UI transitions (open/close, pause policies)
+
+Inventory is a **screen UI** that appears and disappears based on state.
+Without clear transition rules, you’ll quickly end up with:
+
+- gameplay still running while inventory is open
+- stuck selection / ghost drag entities
+- duplicated UI roots
+- inconsistent back navigation (Esc sometimes closes, sometimes pauses)
+
+Bevy’s state system is designed for this: `OnEnter` / `OnExit` schedules for setup/teardown and `in_state(...)` run conditions for steady-state gating. citeturn61search467turn61search471
+State-scoped lifetime tools like `DespawnOnExit<S>` exist specifically to bind entity hierarchies to state transitions. citeturn61search462turn61search465
+
+---
+
+### 9.5.1 Recommended state model (two clean options)
+
+#### Option A (simple): dedicated `GameState::Inventory`
+
+- `InGame` → `Inventory` → `InGame`
+- Inventory UI is the only screen in the `Inventory` state.
+- Gameplay systems run only in `InGame` using `run_if(in_state(GameState::InGame))`. citeturn61search467turn61search468
+
+**Pros**
+
+- Very clear ownership.
+- Easy teardown: `DespawnOnExit(GameState::Inventory)` on UI root. citeturn61search462turn61search465
+
+**Cons**
+
+- If you also have a `Paused` state, you must define precedence.
+
+#### Option B (recommended long-term): `InGame` + sub-state `InGameOverlay`
+
+Use two orthogonal states:
+
+- `GameState`: `MainMenu | InGame | GameOver | ...`
+- `OverlayState`: `None | Paused | Inventory | Settings`
+
+Bevy explicitly supports multiple independent states, and run conditions can check combinations. citeturn61search467turn61search469
+
+**Pros**
+
+- HUD can remain alive under `InGame` while overlays appear.
+- Inventory and pause become mutually exclusive overlays.
+
+**Cons**
+
+- Slightly more setup.
+
+---
+
+### 9.5.2 Open/close rules (the invariant)
+
+Define one invariant and stick to it:
+
+- **Esc** closes the top-most overlay.
+- If no overlay open, Esc opens Pause.
+
+This makes navigation predictable.
+
+---
+
+### 9.5.3 Implementation example (Option A)
+
+#### A) Open inventory on key press
+
+```rust
+use bevy::prelude::*;
+
+#[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
+pub enum GameState {
+    #[default]
+    MainMenu,
+    InGame,
+    Inventory,
+    Paused,
+}
+
+fn toggle_inventory(
+    keys: Res<ButtonInput<KeyCode>>,
+    state: Res<State<GameState>>,
+    mut next: ResMut<NextState<GameState>>,
+) {
+    if !keys.just_pressed(KeyCode::Tab) {
+        return;
+    }
+
+    match state.get() {
+        GameState::InGame => next.set(GameState::Inventory),
+        GameState::Inventory => next.set(GameState::InGame),
+        _ => {}
+    }
+}
+```
+
+Bevy states are changed through `NextState<S>`; transitions then run enter/exit schedules for the involved states. citeturn61search467turn61search468
+
+#### B) Spawn and despawn inventory UI on state enter/exit
+
+```rust
+use bevy::prelude::*;
+use bevy::state::state_scoped::DespawnOnExit;
+
+#[derive(Component)]
+pub struct InventoryUiRoot;
+
+fn spawn_inventory_ui(mut commands: Commands) {
+    commands.spawn((
+        InventoryUiRoot,
+        Name::new("UI:Inventory"),
+        Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+        DespawnOnExit(GameState::Inventory),
+    ));
+}
+```
+
+`DespawnOnExit<S>` exists to remove entities when the world’s state no longer matches the supplied value. citeturn61search462turn61search465
+
+#### C) Freeze gameplay while inventory is open
+
+Gate gameplay systems on `in_state(GameState::InGame)`. citeturn61search467turn61search468
+
+```rust
+app.add_systems(Update, player_movement.run_if(in_state(GameState::InGame)));
+app.add_systems(Update, enemy_ai.run_if(in_state(GameState::InGame)));
+```
+
+---
+
+### 9.5.4 Implementation example (Option B: overlays)
+
+This pattern avoids duplicating “pause vs inventory” logic.
+
+```rust
+#[derive(States, Debug, Clone, Copy, Eq, PartialEq, Hash, Default)]
+pub enum OverlayState {
+    #[default]
+    None,
+    Paused,
+    Inventory,
+}
+
+fn esc_overlay_stack(
+    keys: Res<ButtonInput<KeyCode>>,
+    overlay: Res<State<OverlayState>>,
+    mut next_overlay: ResMut<NextState<OverlayState>>,
+) {
+    if !keys.just_pressed(KeyCode::Escape) {
+        return;
+    }
+
+    match overlay.get() {
+        OverlayState::None => next_overlay.set(OverlayState::Paused),
+        _ => next_overlay.set(OverlayState::None),
+    }
+}
+
+fn tab_inventory(
+    keys: Res<ButtonInput<KeyCode>>,
+    overlay: Res<State<OverlayState>>,
+    mut next_overlay: ResMut<NextState<OverlayState>>,
+) {
+    if !keys.just_pressed(KeyCode::Tab) {
+        return;
+    }
+
+    match overlay.get() {
+        OverlayState::Inventory => next_overlay.set(OverlayState::None),
+        OverlayState::None => next_overlay.set(OverlayState::Inventory),
+        OverlayState::Paused => {
+            // optional: swap from pause to inventory
+            next_overlay.set(OverlayState::Inventory)
+        }
+    }
+}
+```
+
+Then gate gameplay on both:
+
+```rust
+app.add_systems(Update, player_movement
+    .run_if(in_state(GameState::InGame))
+    .run_if(in_state(OverlayState::None)));
+```
+
+Bevy’s run conditions (`in_state`) are designed for exactly this sort of high-level flow control. citeturn61search467turn61search469
+
+---
+
+### 9.5.5 UI transition hygiene (avoid bugs)
+
+When opening/closing inventory:
+
+- **Clear selection** (or preserve it intentionally)
+- **Clear drag state** (despawn ghost nodes)
+- **Reset hover highlights**
+
+Recommended systems:
+
+- `OnEnter(Inventory)`: init `InventoryUiState { selected: None }`, set `DragState` to default
+- `OnExit(Inventory)`: ensure ghost UI entities are despawned
+
+This prevents “ghost items” if the user closes inventory mid-drag.
+
+---
+
+### 9.5.6 Tests for transitions
+
+#### Test A: entering inventory spawns root, exiting despawns root
+
+This matches your UI lifecycle tests and relies on `OnEnter`/`OnExit` + `DespawnOnExit`. citeturn61search467turn61search462
+
+```rust
+#[test]
+fn inventory_ui_root_spawns_and_despawns_on_state_transition() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.init_state::<GameState>();
+
+    app.add_systems(OnEnter(GameState::Inventory), spawn_inventory_ui);
+
+    // Enter inventory
+    app.world_mut().resource_mut::<NextState<GameState>>().set(GameState::Inventory);
+    app.update();
+    let count = app.world().query::<&InventoryUiRoot>().iter(app.world()).count();
+    assert_eq!(count, 1);
+
+    // Exit inventory
+    app.world_mut().resource_mut::<NextState<GameState>>().set(GameState::InGame);
+    app.update();
+    let count2 = app.world().query::<&InventoryUiRoot>().iter(app.world()).count();
+    assert_eq!(count2, 0);
+}
+```
+
+#### Test B: drag state resets on exit
+
+```rust
+#[test]
+fn drag_state_resets_on_inventory_close() {
+    let mut world = World::new();
+    world.insert_resource(DragState {
+        dragging: Some(DragPayload { from: SlotRef::InventoryIndex(0), item: ItemId::Medkit, count: 1 }),
+        ghost_entity: None,
+        over: None,
+    });
+
+    // Simulate OnExit handler
+    *world.resource_mut::<DragState>() = DragState::default();
+
+    assert!(world.resource::<DragState>().dragging.is_none());
+}
+```
+
+---
+
+### 9.5.7 Recommended transition UX (quick checklist)
+
+- Tab toggles Inventory (or I)
+- Esc closes Inventory if open, else opens Pause
+- Inventory freezes gameplay
+- HUD stays visible but can be dimmed
+- Inventory closes safely even mid-drag
+
+---
+
+## 9.6 Inventory animations (open/close, polish, and safety)
+
+Animations are *pure UX*: they should improve clarity and feel, without changing gameplay state.
+This section shows a minimal, dependency-free animation approach for the inventory screen.
+
+### 9.6.1 Principles
+
+1. **Animate only UI-owned entities**
+   - Never animate gameplay components from inventory UI.
+
+2. **Drive animations from state transitions**
+   - `OnEnter(Inventory)` starts the "open" animation.
+   - `OnExit(Inventory)` starts the "close" animation.
+
+3. **Prefer one of two animation strategies**
+
+- **A) Animate within the same state** (recommended):
+  - OnEnter: start open animation.
+  - OnExit: start close animation and delay the actual state transition until completion.
+
+- **B) Use a short-lived transition sub-state**:
+  - `OverlayState::InventoryOpening`, then `Inventory`, and similar for closing.
+  - Useful if you want strict state ownership without delay logic.
+
+1. **Keep updates cheap**
+   - Update a small number of UI nodes per frame (root panel + dim background + tooltip).
+
+---
+
+### 9.6.2 What to animate (a good default)
+
+A great “inventory open” animation that reads well:
+
+- **Dim background fade in** (alpha 0 → 0.6)
+- **Panel slide in** (x from offscreen → target)
+- **Panel scale** (0.98 → 1.0) optional
+- **Tooltip fade** (optional)
+
+This conveys:
+
+- you entered a modal screen
+- your focus is now on inventory
+
+---
+
+### 9.6.3 Minimal animation components
+
+We define an animation component that stores time and parameters.
+
+```rust
+use bevy::prelude::*;
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct UiTween {
+    pub t: f32,
+    pub duration: f32,
+    pub direction: TweenDirection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TweenDirection {
+    In,
+    Out,
+}
+
+impl UiTween {
+    pub fn new_in(duration: f32) -> Self {
+        Self { t: 0.0, duration, direction: TweenDirection::In }
+    }
+    pub fn new_out(duration: f32) -> Self {
+        Self { t: 0.0, duration, direction: TweenDirection::Out }
+    }
+
+    pub fn progress(&self) -> f32 {
+        (self.t / self.duration).clamp(0.0, 1.0)
+    }
+}
+
+// A simple easing function (smoothstep)
+fn ease_smoothstep(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+```
+
+---
+
+### 9.6.4 Mark the nodes you want to animate
+
+```rust
+use bevy::prelude::*;
+
+#[derive(Component)]
+pub struct InventoryUiRoot;
+
+/// Fullscreen dim background node (the dark overlay)
+#[derive(Component)]
+pub struct InventoryDim;
+
+/// The main panel/window (the centered inventory box)
+#[derive(Component)]
+pub struct InventoryPanel;
+```
+
+When spawning the inventory UI, attach `UiTween::new_in(...)` to the root (or panel), and optionally separate tweens on dim vs panel.
+
+---
+
+### 9.6.5 Open animation (OnEnter)
+
+Example: spawn the inventory UI and start tween.
+
+```rust
+use bevy::prelude::*;
+use bevy::state::state_scoped::DespawnOnExit;
+
+fn spawn_inventory_ui_with_animation(mut commands: Commands) {
+    // Root is still state-scoped. We animate within the state.
+    commands
+        .spawn((
+            InventoryUiRoot,
+            Name::new("UI:Inventory"),
+            Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+            DespawnOnExit(GameState::Inventory),
+        ))
+        .with_children(|p| {
+            // Dim background
+            p.spawn((
+                InventoryDim,
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    top: Val::Px(0.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
+                UiTween::new_in(0.18),
+            ));
+
+            // Panel
+            p.spawn((
+                InventoryPanel,
+                Node {
+                    position_type: PositionType::Absolute,
+                    // Start slightly offscreen (left). We'll slide it in.
+                    left: Val::Px(-40.0),
+                    top: Val::Px(80.0),
+                    width: Val::Px(640.0),
+                    height: Val::Px(420.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.08, 0.08, 0.10, 0.0)),
+                UiTween::new_in(0.22),
+            ));
+        });
+}
+```
+
+Notes:
+
+- We fade the dim background and the panel independently.
+- We start alpha at 0.0 so the UI doesn’t “pop” before the tween.
+
+---
+
+### 9.6.6 Per-frame animation system (Update)
+
+This system advances `UiTween` and writes to `Node` positions and colors.
+
+```rust
+use bevy::prelude::*;
+
+fn animate_inventory_ui(
+    time: Res<Time>,
+    mut q_dim: Query<(&mut UiTween, &mut BackgroundColor), With<InventoryDim>>,
+    mut q_panel: Query<(&mut UiTween, &mut Node, &mut BackgroundColor), With<InventoryPanel>>,
+) {
+    // Dim fade
+    for (mut tween, mut bg) in &mut q_dim {
+        tween.t += time.delta_secs();
+        let p = ease_smoothstep(tween.progress());
+        let p = match tween.direction { TweenDirection::In => p, TweenDirection::Out => 1.0 - p };
+
+        // Fade to 60% alpha
+        bg.0 = Color::srgba(0.0, 0.0, 0.0, 0.6 * p);
+    }
+
+    // Panel slide + fade
+    for (mut tween, mut node, mut bg) in &mut q_panel {
+        tween.t += time.delta_secs();
+        let p = ease_smoothstep(tween.progress());
+        let p = match tween.direction { TweenDirection::In => p, TweenDirection::Out => 1.0 - p };
+
+        // Slide from x=-40 to x=80
+        let x = -40.0 + (120.0 * p);
+        node.left = Val::Px(x);
+
+        // Fade in panel background to 95% alpha
+        bg.0 = Color::srgba(0.08, 0.08, 0.10, 0.95 * p);
+    }
+}
+```
+
+This is intentionally simple and avoids external tween crates.
+You can extend it to animate text alpha (`TextColor`) and scale (see below).
+
+---
+
+### 9.6.7 Close animation (two approaches)
+
+#### Approach A (simple, no delayed exit): animate only *while open*
+
+With `DespawnOnExit`, the UI is removed immediately on state change.
+That means you won’t see a closing animation.
+
+So if you want a closing animation, you need either:
+
+- a delayed state transition, or
+- a separate “closing” state.
+
+#### Approach B (recommended): delayed transition via an intermediate request
+
+Instead of switching state immediately when Esc is pressed:
+
+1) emit `InventoryCloseRequested`
+2) set `UiTween::new_out(...)` on animated nodes
+3) when all tweens finish, then switch state back to `InGame`
+
+```rust
+use bevy::prelude::*;
+
+#[derive(Message, Debug, Clone, Copy)]
+pub struct InventoryCloseRequested;
+
+fn request_close_inventory(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut out: MessageWriter<InventoryCloseRequested>,
+) {
+    if keys.just_pressed(KeyCode::Escape) {
+        out.write(InventoryCloseRequested);
+    }
+}
+
+fn begin_close_animation(
+    mut req: MessageReader<InventoryCloseRequested>,
+    mut q: Query<&mut UiTween, Or<(With<InventoryDim>, With<InventoryPanel>)>>,
+) {
+    if req.is_empty() {
+        return;
+    }
+    req.clear();
+
+    for mut tween in &mut q {
+        // Restart tween in "out" direction
+        *tween = UiTween::new_out(0.18);
+    }
+}
+
+fn finish_close_when_done(
+    q: Query<&UiTween, Or<(With<InventoryDim>, With<InventoryPanel>)>>,
+    mut next: ResMut<NextState<GameState>>,
+) {
+    // If any tween still running, keep waiting
+    if q.iter().any(|t| t.progress() < 1.0) {
+        return;
+    }
+
+    // All tweens completed: exit inventory
+    next.set(GameState::InGame);
+}
+```
+
+This integrates cleanly with your existing state-transition architecture.
+
+---
+
+### 9.6.8 Optional: scale and tooltip animation
+
+Scale is trickier in UI because layout is driven by `Node` sizes.
+Two simple options:
+
+- animate a **child panel** with a smaller/larger `width/height` around a center anchor
+- animate a **Transform** if you’re using UI transforms for that node (advanced)
+
+A practical approach: animate width/height around a center position.
+
+```rust
+fn animate_panel_size(node: &mut Node, p: f32) {
+    let w0 = 620.0;
+    let w1 = 640.0;
+    let h0 = 400.0;
+    let h1 = 420.0;
+    node.width = Val::Px(w0 + (w1 - w0) * p);
+    node.height = Val::Px(h0 + (h1 - h0) * p);
+}
+```
+
+Tooltips: fade in/out by animating `TextColor` alpha.
+
+---
+
+### 9.6.9 Animation hygiene (important)
+
+- OnExit(Inventory): ensure drag ghost entities are despawned.
+- Ensure only one inventory root exists.
+- Gate animation systems to only run when inventory is active.
+
+```rust
+app.add_systems(Update, animate_inventory_ui.run_if(in_state(GameState::Inventory)));
+```
+
+---
+
+### 9.6.10 Tests (lightweight)
+
+Animations are hard to test visually, but you can test invariants:
+
+- `UiTween` progresses to 1.0 after duration
+- closing request triggers state change after completion
+
+```rust
+#[test]
+fn tween_reaches_done() {
+    let mut t = UiTween::new_in(0.1);
+    t.t = 0.2;
+    assert_eq!(t.progress(), 1.0);
+}
+```
+
 ## 10) Common design choices (with examples)
 
 ### 10.1 “Items as entities” vs “items as data”
@@ -2196,6 +2796,581 @@ fn equipping_item_recomputes_stats() {
 7. Optional picking click interactions
 
 ---
+
+---
+
+## 14) Saving inventory state (save/load)
+
+Sooner or later you’ll want:
+
+- “continue run” (roguelite)
+- persistent settings (audio mix)
+- meta progression
+- debugging reproduction of a build (share seed + inventory)
+
+This section focuses on saving **inventory + equipment** cleanly, without tying your entire game to one serialization scheme.
+
+### 14.1 What should be saved?
+
+Split save data into **run** vs **meta**:
+
+- **Run save** (reset each run): seed, wave, inventory, equipment, temporary upgrades.
+- **Meta save** (persistent): unlocks, settings (audio mix), permanent currency.
+
+This mirrors the “single source of truth” rule: inventory/equipment are resources and are good save candidates. citeturn53search418turn53search419
+
+---
+
+## 14.2 Two practical serialization approaches
+
+### Approach A (recommended first): Serialize your resources directly (Serde)
+
+Because your inventory/equipment are **data resources**, the simplest approach is to serialize them into a single `SaveData` struct.
+This avoids reflection/type registry complexity and is extremely testable.
+
+**When to use:**
+
+- you’re saving mostly resources and small structs
+- you don’t need to serialize arbitrary components/entities
+
+### Approach B (advanced): Use Bevy Scenes / `DynamicScene`
+
+Bevy’s scene system can serialize a `DynamicScene` into Bevy’s scene format (`.scn` / `.scn.ron`) which is based on RON. citeturn59search440turn59search444
+`DynamicScene::serialize` exists behind the `serialize` feature flag. citeturn59search440
+
+**When to use:**
+
+- you want to save a set of entities + components + resources
+- you want reflection-driven tooling (inspect/patch)
+
+Be aware that saving with filesystem APIs is blocking; Bevy’s official scene example uses `IoTaskPool` to avoid stalling the main thread, and notes this won’t work on WASM due to lack of standard filesystem access. citeturn59search438turn59search439
+
+---
+
+## 14.3 Versioned save format (do this early)
+
+Even if you start simple, include a version field:
+
+```rust
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct SaveData {
+    pub version: u32,
+    pub run: Option<RunSave>,
+    pub meta: Option<MetaSave>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct RunSave {
+    pub seed: u64,
+    pub wave: u32,
+    pub inventory: Inventory,
+    pub equipment: Equipment,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct MetaSave {
+    pub unlocked_items: Vec<ItemId>,
+    pub audio_master: f32,
+}
+```
+
+Why:
+
+- Save schemas change. A version lets you migrate gracefully.
+- You can keep old saves valid during development.
+
+---
+
+## 14.4 “SaveRequested → SaveApplied → SaveResolved” pattern
+
+Treat saving like any other subsystem:
+
+- gameplay/UI emits `SaveRequested`
+- a save system gathers resources and serializes
+- completion emits `SaveResolved`
+
+This prevents random systems from writing files directly.
+
+```rust
+use bevy::prelude::*;
+
+#[derive(Message, Debug, Clone, Copy)]
+pub struct SaveRequested;
+
+#[derive(Message, Debug, Clone, Copy)]
+pub struct LoadRequested;
+
+#[derive(Message, Debug, Clone)]
+pub struct SaveResolved {
+    pub ok: bool,
+}
+```
+
+Bevy messages are written with `MessageWriter` and read using `MessageReader`, which fits this decoupled flow. citeturn53search407turn53search411
+
+---
+
+## 14.5 Implementing save/load (Serde + RON, filesystem)
+
+Below is a pragmatic approach:
+
+- serialize to RON (human-readable, diffable)
+- write file using `IoTaskPool` so you don’t block the game thread
+
+Bevy’s scene system uses RON for scene serialization, which is a good reason to reuse RON for your own save files. citeturn59search440turn59search439
+The official custom asset example shows RON parsing via `ron::de::from_bytes`, which is the same technique you’ll use for loading. citeturn59search448
+
+```rust
+use bevy::prelude::*;
+use bevy::tasks::IoTaskPool;
+
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct SaveIoEnabled(pub bool);
+
+impl Default for SaveIoEnabled {
+    fn default() -> Self { Self(true) }
+}
+
+fn handle_save_requests(
+    mut req: MessageReader<SaveRequested>,
+    io_enabled: Res<SaveIoEnabled>,
+    inv: Res<Inventory>,
+    equip: Res<Equipment>,
+    // add your RunConfig/RunState here
+    mut out: MessageWriter<SaveResolved>,
+) {
+    // Always consume messages
+    if req.is_empty() {
+        return;
+    }
+
+    // Drain all SaveRequested (one save per frame)
+    req.clear();
+
+    // If IO disabled (tests/headless), report success and exit
+    if !io_enabled.0 {
+        out.write(SaveResolved { ok: true });
+        return;
+    }
+
+    // Build save payload
+    let data = SaveData {
+        version: 1,
+        run: Some(RunSave {
+            seed: 0,
+            wave: 0,
+            inventory: inv.clone(),
+            equipment: equip.clone(),
+        }),
+        meta: None,
+    };
+
+    // Serialize
+    let ron = ron::ser::to_string_pretty(&data, ron::ser::PrettyConfig::default())
+        .expect("serialize save");
+
+    // Write asynchronously (blocking filesystem)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        IoTaskPool::get()
+            .spawn(async move {
+                std::fs::create_dir_all("saves").ok();
+                std::fs::write("saves/save.ron", ron).expect("write save");
+            })
+            .detach();
+    }
+
+    // Note: if you want to confirm write completion, use a channel or return handle.
+    out.write(SaveResolved { ok: true });
+}
+
+fn handle_load_requests(
+    mut req: MessageReader<LoadRequested>,
+    io_enabled: Res<SaveIoEnabled>,
+    mut inv: ResMut<Inventory>,
+    mut equip: ResMut<Equipment>,
+) {
+    if req.is_empty() {
+        return;
+    }
+    req.clear();
+
+    if !io_enabled.0 {
+        return;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Ok(bytes) = std::fs::read("saves/save.ron") {
+            let data: SaveData = ron::de::from_bytes(&bytes).expect("parse save");
+            if let Some(run) = data.run {
+                *inv = run.inventory;
+                *equip = run.equipment;
+            }
+        }
+    }
+}
+```
+
+**Important note on WASM:** direct filesystem APIs aren’t available; Bevy’s own scene saving notes this limitation. citeturn59search438turn59search439
+
+---
+
+## 14.6 Using Bevy Scenes for save files (optional, advanced)
+
+If you want to save a subset of world state (entities + resources) as a `DynamicScene`:
+
+- create a `DynamicScene` from the world
+- serialize using `DynamicScene::serialize` (requires `bevy/serialize` feature)
+
+`DynamicScene::serialize` produces Bevy scene format (`.scn.ron`) based on RON. citeturn59search440turn59search444
+
+This is powerful, but requires:
+
+- registering types for reflection
+- handling entity mapping for entity references
+
+Bevy’s scene example demonstrates registering types and saving scenes to disk (with threading notes). citeturn59search438
+
+---
+
+## 14.7 Headless tests: gate save IO
+
+Your perf harness and unit tests should not touch the filesystem.
+Use a resource gate:
+
+- `SaveIoEnabled(false)` in tests
+- still consume `SaveRequested` messages to avoid backlog
+
+This mirrors your audio gating approach.
+
+---
+
+## 14.8 Tests for saving inventory
+
+### Test A: save serialization roundtrip (no filesystem)
+
+This test proves your save format is stable.
+
+```rust
+#[test]
+fn save_roundtrip_inventory_equipment() {
+    let original = SaveData {
+        version: 1,
+        run: Some(RunSave {
+            seed: 123,
+            wave: 3,
+            inventory: Inventory {
+                items: vec![ItemStack { id: ItemId::Medkit, count: 2 }],
+                gold: 15,
+            },
+            equipment: Equipment {
+                weapon: Some(ItemId::Shotgun),
+                armor: None,
+                trinkets: vec![ItemId::DamageUp],
+            },
+        }),
+        meta: None,
+    };
+
+    let ron = ron::ser::to_string(&original).unwrap();
+    let decoded: SaveData = ron::de::from_str(&ron).unwrap();
+
+    assert_eq!(decoded.version, 1);
+    assert_eq!(decoded.run.unwrap().inventory.gold, 15);
+}
+```
+
+### Test B: load applies inventory to world
+
+```rust
+#[test]
+fn load_applies_inventory() {
+    let mut world = World::new();
+    world.insert_resource(Inventory::default());
+    world.insert_resource(Equipment::default());
+
+    // Simulate loaded data
+    let loaded = RunSave {
+        seed: 1,
+        wave: 1,
+        inventory: Inventory { items: vec![ItemStack { id: ItemId::Medkit, count: 1 }], gold: 3 },
+        equipment: Equipment { weapon: None, armor: None, trinkets: vec![] },
+    };
+
+    *world.resource_mut::<Inventory>() = loaded.inventory;
+
+    assert_eq!(world.resource::<Inventory>().gold, 3);
+}
+```
+
+---
+
+### 14.9 Recommended implementation order
+
+1) Implement Serde save struct + roundtrip test
+2) Implement `SaveRequested` / `LoadRequested` messages
+3) Gate IO in tests (`SaveIoEnabled(false)`)
+4) Add a simple “Save” button in pause menu
+5) Later: meta save file, migration/version bumps
+
+---
+
+## 14.10 Loading inventory state (apply policies, safety, UI)
+
+Saving is only half the job. Loading becomes tricky because you must decide **what happens to the running world**:
+
+- Do you load only inventory/equipment (resources), or also world entities?
+- Do you overwrite current state, or merge?
+- When do you load (boot, main menu, continue run)?
+
+This section focuses on **loading inventory + equipment** robustly.
+If you later need to load entities/components too, see the `DynamicScene` approach in the previous section.
+
+### 14.10.1 Load timing: when is it safe?
+
+Recommended load points:
+
+1. **OnEnter(MainMenu)**: load meta/settings and show “Continue Run” if a run save exists.
+2. **OnEnter(Loading/Boot)**: load meta/settings before creating UI.
+3. **OnEnter(InGame)**: apply a run save *before* spawning the level, so the world can be constructed from the loaded state.
+
+Avoid loading mid-frame in the middle of combat. It is better to transition to a loading state, then load.
+
+---
+
+### 14.10.2 Load policy: overwrite vs merge
+
+You need a policy per resource:
+
+- **Inventory**: usually overwrite (loaded save becomes authoritative).
+- **Equipment**: overwrite.
+- **Currencies**:
+  - run currency overwrite
+  - meta currency merge (or overwrite depending on design)
+
+Define this explicitly so there are no “silent merges.”
+
+```rust
+#[derive(Debug, Clone, Copy)]
+pub enum LoadPolicy {
+    Overwrite,
+    Merge,
+}
+
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct SaveLoadPolicy {
+    pub inventory: LoadPolicy,
+    pub equipment: LoadPolicy,
+    pub gold: LoadPolicy,
+}
+
+impl Default for SaveLoadPolicy {
+    fn default() -> Self {
+        Self {
+            inventory: LoadPolicy::Overwrite,
+            equipment: LoadPolicy::Overwrite,
+            gold: LoadPolicy::Overwrite,
+        }
+    }
+}
+```
+
+---
+
+### 14.10.3 A clear load pipeline (messages + stages)
+
+Keep loading consistent with the rest of your architecture:
+
+- UI emits `LoadRequested`
+- loader system reads file + parses
+- apply system mutates resources according to policy
+- emit `LoadResolved { ok }`
+
+This prevents random systems from pulling files and patching resources.
+
+```rust
+use bevy::prelude::*;
+
+#[derive(Message, Debug, Clone, Copy)]
+pub struct LoadRequested;
+
+#[derive(Message, Debug, Clone)]
+pub struct LoadResolved {
+    pub ok: bool,
+    pub has_run: bool,
+}
+
+#[derive(Resource, Debug, Default, Clone)]
+pub struct PendingLoad {
+    pub data: Option<SaveData>,
+}
+```
+
+---
+
+### 14.10.4 Load implementation example (RON + policies)
+
+This example:
+
+- reads `saves/save.ron`
+- parses into `SaveData`
+- stores it in `PendingLoad`
+- applies inventory/equipment according to `SaveLoadPolicy`
+
+```rust
+use bevy::prelude::*;
+
+fn read_save_file(
+    mut req: MessageReader<LoadRequested>,
+    io_enabled: Res<SaveIoEnabled>,
+    mut pending: ResMut<PendingLoad>,
+    mut out: MessageWriter<LoadResolved>,
+) {
+    if req.is_empty() {
+        return;
+    }
+    req.clear();
+
+    if !io_enabled.0 {
+        out.write(LoadResolved { ok: true, has_run: false });
+        return;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match std::fs::read("saves/save.ron") {
+            Ok(bytes) => {
+                match ron::de::from_bytes::<SaveData>(&bytes) {
+                    Ok(data) => {
+                        let has_run = data.run.is_some();
+                        pending.data = Some(data);
+                        out.write(LoadResolved { ok: true, has_run });
+                    }
+                    Err(_) => out.write(LoadResolved { ok: false, has_run: false }),
+                }
+            }
+            Err(_) => out.write(LoadResolved { ok: true, has_run: false }),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        // No filesystem access by default.
+        out.write(LoadResolved { ok: true, has_run: false });
+    }
+}
+
+fn apply_loaded_run_state(
+    policy: Res<SaveLoadPolicy>,
+    mut pending: ResMut<PendingLoad>,
+    mut inv: ResMut<Inventory>,
+    mut equip: ResMut<Equipment>,
+) {
+    let Some(data) = pending.data.take() else { return; };
+    let Some(run) = data.run else { return; };
+
+    // Inventory
+    match policy.inventory {
+        LoadPolicy::Overwrite => *inv = run.inventory,
+        LoadPolicy::Merge => {
+            // naive merge example: append stacks then optionally compact
+            inv.items.extend(run.inventory.items);
+            inv.gold += run.inventory.gold;
+        }
+    }
+
+    // Equipment
+    match policy.equipment {
+        LoadPolicy::Overwrite => *equip = run.equipment,
+        LoadPolicy::Merge => {
+            // merging equipment is usually undefined; treat merge as overwrite
+            *equip = run.equipment;
+        }
+    }
+}
+```
+
+**Notes**
+
+- This approach avoids async complexity; if you want non-blocking IO, use `IoTaskPool` and send results back via a channel, like Bevy’s scene saving example does.
+- After applying `Equipment`, your existing stat recompute system should run automatically via change detection.
+
+---
+
+### 14.10.5 UI integration: “Continue Run” button
+
+A clean UX:
+
+- MainMenu loads save metadata (or just checks file existence)
+- If `has_run == true`, show a “Continue” button
+- On click: emit `LoadRequested`, then transition to `InGame` once `LoadResolved.ok`
+
+Because inventory UI already uses a view model pattern, you can reuse the same approach for “save slot view models.”
+
+---
+
+### 14.10.6 Safety: loading when pooled entities exist
+
+If you use pooling (bullets, pickups), loading mid-run can conflict with pooled entities.
+Recommended approach:
+
+- Transition to a dedicated `Loading` state
+- Clear pooled/spawned runtime entities
+- Apply loaded resources
+- Rebuild world from loaded state
+
+This keeps invariants clean.
+
+---
+
+### 14.10.7 Advanced: loading scenes (`DynamicScene`) for full world state
+
+If you later want to load full world state:
+
+- `DynamicScene::serialize` / `SceneLoader` are built around Bevy’s scene format (`.scn.ron`) and use reflection.
+- `DynamicScene::write_to_world_with` supports writing resources and entities back to a `World` using an entity map and a type registry.
+
+See Bevy’s `DynamicScene` docs for the available methods and required registries. citeturn59search440turn59search444
+
+---
+
+### 14.10.8 Tests for loading
+
+#### Test A: apply-loaded overwrites inventory
+
+```rust
+#[test]
+fn load_policy_overwrite_replaces_inventory() {
+    let mut inv = Inventory { items: vec![ItemStack { id: ItemId::Medkit, count: 9 }], gold: 99 };
+    let loaded = Inventory { items: vec![ItemStack { id: ItemId::Medkit, count: 1 }], gold: 3 };
+
+    let policy = SaveLoadPolicy::default();
+    assert!(matches!(policy.inventory, LoadPolicy::Overwrite));
+
+    if matches!(policy.inventory, LoadPolicy::Overwrite) {
+        inv = loaded;
+    }
+
+    assert_eq!(inv.gold, 3);
+    assert_eq!(inv.items[0].count, 1);
+}
+```
+
+#### Test B: apply-loaded triggers stat recompute
+
+You already have tests for equipment affecting stats; loading is just another path that mutates `Equipment`.
+So the existing stat tests are your “load correctness” tests.
+
+---
+
+### 14.10.9 Recommended implementation order
+
+1) Implement load parsing + `PendingLoad`
+2) Apply overwrite policy for inventory/equipment
+3) Add “Continue Run” to MainMenu
+4) Add merge policies only if you truly need them
+5) Consider `DynamicScene` only if you must save entities
 
 ## References
 
