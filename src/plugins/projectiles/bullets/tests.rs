@@ -15,6 +15,9 @@ fn hit_enemy_despawns_both() {
     let bullet = world.spawn(super::Bullet { damage: 1 }).id();
     let enemy = world.spawn(crate::plugins::enemies::Enemy).id();
 
+    assert!(world.get_entity(bullet).is_ok());
+    assert!(world.get_entity(enemy).is_ok());
+
     write_collision(&mut world, bullet, enemy);
 
     run_system_once(&mut world, super::systems::process_bullet_hits);

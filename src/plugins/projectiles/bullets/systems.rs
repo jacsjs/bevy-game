@@ -57,7 +57,7 @@ pub fn spawn_player_bullets(
         friction,
         LinearVelocity(dir * tunables.bullet_speed),
 
-        // Opt-in collision events: Avian only emits CollisionStart/End if one collider has this marker. citeturn4search84turn4search88
+        // Opt-in collision events: Avian only emits CollisionStart/End if one collider has this marker.
         CollisionEventsEnabled,
 
         DespawnOnExit(GameState::InGame),
@@ -79,8 +79,8 @@ pub fn bullet_lifetime(
 
 /// Bulk collision processing for bullet hits.
 ///
-/// Avian docs: reading collision events as Messages via MessageReader is efficient for many collisions (bullet hits). citeturn4search84turn4search86
-/// CollisionStart is only written if one of the colliders has CollisionEventsEnabled. citeturn4search84turn4search88
+/// Avian docs: reading collision events as Messages via MessageReader is efficient for many collisions (bullet hits).
+/// CollisionStart is only written if one of the colliders has CollisionEventsEnabled.
 pub fn process_bullet_hits(
     mut commands: Commands,
     mut started: MessageReader<CollisionStart>,
