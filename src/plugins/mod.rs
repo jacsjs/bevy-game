@@ -3,6 +3,7 @@
 use bevy::prelude::*;
 
 pub mod core;
+pub mod debug_tools;
 pub mod enemies;
 pub mod physics;
 pub mod player;

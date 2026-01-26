@@ -8,9 +8,15 @@ pub mod systems;
 pub use components::*;
 
 pub fn plugin(app: &mut App) {
-    app.add_systems(Update, systems::spawn_player_bullets)
-        .add_systems(FixedUpdate, systems::bullet_lifetime)
-        .add_systems(PostUpdate, systems::process_bullet_hits);
+    app.add_systems(
+        Update,
+        systems::spawn_player_bullets.run_if(
+            resource_exists::<ButtonInput<MouseButton>>
+                .and(resource_changed::<ButtonInput<MouseButton>>),
+        ),
+    )
+    .add_systems(FixedUpdate, systems::bullet_lifetime)
+    .add_systems(PostUpdate, systems::process_bullet_hits);
 }
 
 #[cfg(test)]

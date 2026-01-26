@@ -17,65 +17,65 @@ use super::{Bullet, Lifetime};
 /// - `CollisionEventsEnabled` is attached only to bullets to opt-in collision events.
 pub fn spawn_player_bullets(
     mut commands: Commands,
-    buttons: Option<Res<ButtonInput<MouseButton>>>,
+    buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     q_player: Query<&Transform, With<Player>>,
     tunables: Res<Tunables>,
 ) {
-    let Some(_buttons) = buttons else { return; };
+    if buttons.just_pressed(MouseButton::Left) {
+        let Ok(player_tf) = q_player.single() else {
+            return;
+        };
+        let Ok((camera, camera_tf)) = q_camera.single() else {
+            return;
+        };
+        let Ok(window) = windows.single() else {
+            return;
+        };
 
-    let Ok(player_tf) = q_player.single() else {
-        return;
-    };
-    let Ok((camera, camera_tf)) = q_camera.single() else {
-        return;
-    };
-    let Ok(window) = windows.single() else {
-        return;
-    };
+        let Some(cursor) = window.cursor_position() else {
+            return;
+        };
+        let Ok(world_cursor) = camera.viewport_to_world_2d(camera_tf, cursor) else {
+            return;
+        };
 
-    let Some(cursor) = window.cursor_position() else {
-        return;
-    };
-    let Ok(world_cursor) = camera.viewport_to_world_2d(camera_tf, cursor) else {
-        return;
-    };
+        let origin = player_tf.translation.truncate();
+        let dir = world_cursor - origin;
+        let dir = if dir.length_squared() > 0.001 {
+            dir.normalize()
+        } else {
+            Vec2::Y
+        };
 
-    let origin = player_tf.translation.truncate();
-    let dir = world_cursor - origin;
-    let dir = if dir.length_squared() > 0.001 {
-        dir.normalize()
-    } else {
-        Vec2::Y
-    };
+        let layers = CollisionLayers::new(Layer::PlayerBullet, [Layer::World, Layer::Enemy]);
 
-    let layers = CollisionLayers::new(Layer::PlayerBullet, [Layer::World, Layer::Enemy]);
+        // Bouncy bullets (dynamic): easiest baseline.
+        let restitution = Restitution::new(0.95).with_combine_rule(CoefficientCombine::Max);
+        let friction = Friction::ZERO;
 
-    // Bouncy bullets (dynamic): easiest baseline.
-    let restitution = Restitution::new(0.95).with_combine_rule(CoefficientCombine::Max);
-    let friction = Friction::ZERO;
-
-    commands.spawn((
-        Name::new("Bullet"),
-        Bullet { damage: 1 },
-        Lifetime(Timer::from_seconds(3.0, TimerMode::Once)),
-        Sprite {
-            color: Color::srgb(1.0, 0.85, 0.3),
-            custom_size: Some(Vec2::splat(8.0)),
-            ..default()
-        },
-        Transform::from_translation((origin + dir * 18.0).extend(2.0)),
-        RigidBody::Dynamic,
-        Collider::circle(4.0),
-        layers,
-        restitution,
-        friction,
-        LinearVelocity(dir * tunables.bullet_speed),
-        // Opt-in collision events: Avian only emits CollisionStart/End if one collider has this marker.
-        CollisionEventsEnabled,
-        DespawnOnExit(GameState::InGame),
-    ));
+        commands.spawn((
+            Name::new("Bullet"),
+            Bullet { damage: 1 },
+            //Lifetime(Timer::from_seconds(3.0, TimerMode::Once)),
+            Sprite {
+                color: Color::srgb(1.0, 0.85, 0.3),
+                custom_size: Some(Vec2::splat(8.0)),
+                ..default()
+            },
+            Transform::from_translation((origin + dir * 18.0).extend(2.0)),
+            RigidBody::Dynamic,
+            Collider::circle(4.0),
+            layers,
+            restitution,
+            friction,
+            LinearVelocity(dir * tunables.bullet_speed),
+            // Opt-in collision events: Avian only emits CollisionStart/End if one collider has this marker.
+            CollisionEventsEnabled,
+            DespawnOnExit(GameState::InGame),
+        ));
+    }
 }
 
 pub fn bullet_lifetime(

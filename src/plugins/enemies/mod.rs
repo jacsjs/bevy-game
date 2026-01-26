@@ -3,6 +3,7 @@
 use avian2d::prelude::*;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
+use bevy_firefly::prelude::Occluder2d;
 
 use crate::common::{layers::Layer, state::GameState};
 
@@ -32,6 +33,7 @@ fn spawn_targets(mut commands: Commands) {
             RigidBody::Static,
             Collider::circle(16.0),
             enemy_layers,
+            Occluder2d::circle(16.0),
             DespawnOnExit(GameState::InGame),
         ));
     }
