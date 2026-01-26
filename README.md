@@ -1761,8 +1761,1041 @@ In headless tests, avoid adding render/UI plugins, or gate systems with run cond
 
 ---
 
+# Asset & Content Pipeline (Loading, Hot‑Reload, Directories, Conventions)
+
+This chapter defines an **asset/content pipeline** suitable for a modular Bevy game:
+
+- consistent `assets/` directory layout
+- clear rules for asset paths and naming
+- a minimal “asset registry / handles” pattern
+- a loading flow that plugs into your `GameState`
+- hot-reload guidance for fast iteration
+- test patterns that catch missing/invalid assets early
+
+Bevy’s asset system is centered around `AssetServer` (load + track assets asynchronously) and `Assets<T>` (storage for loaded assets) with paths resolved relative to the configured asset folder (default: `assets`).[^asset_server][^asset_handles]
+
+---
+
+## 1) Directory layout conventions
+
+### Goals
+
+- Keep paths short and stable (avoid “deep nesting” without reason).
+- Group by *kind* of asset rather than by “feature module” (because multiple features share the same assets).
+- Make it obvious where to add new content.
+
+### Recommended `assets/` tree
+
+```text
+assets/
+  fonts/
+    ui/
+    debug/
+  sprites/
+    player/
+    enemies/
+    bullets/
+    ui/
+  sfx/
+    ui/
+    weapons/
+    impacts/
+  music/
+  levels/
+    arenas/
+    patterns/
+  shaders/
+  atlases/
+  README.md
+```
+
+### Naming conventions
+
+- Use **lowercase + underscores** for file names.
+- Prefer stable semantic names (`player_idle.png`) over versioned names (`player_v7.png`).
+- If you must version, do it at the folder level (`player/v2/…`) instead of the filename.
+
+---
+
+## 2) Asset paths and portability rules
+
+### Rule: All runtime paths are asset-relative
+
+When you call `asset_server.load("sprites/player/player_idle.png")`, Bevy treats it as a path inside the configured asset folder (default is `assets`).[^asset_server]
+
+**Portability checklist**
+
+- Keep all runtime-loaded assets under `assets/`.
+- Avoid `../` in asset paths.
+- Use the same relative paths in code, tests, and tooling.
+
+Bevy’s `AssetPlugin` controls the asset root directories and also contains an `unapproved_path_mode` to define how to handle paths outside approved directories.[^asset_plugin]
+
+---
+
+## 3) “Handles registry” pattern (asset collection as a Resource)
+
+### Why
+
+Gameplay and UI code should not hardcode strings everywhere.
+Instead, load handles once and store them in a resource that is owned by the relevant feature/plugin.
+
+Bevy’s standard model is:
+
+1) `AssetServer::load(path)` returns a `Handle<T>` immediately.
+2) The asset loads asynchronously in the background.
+3) Components can store the handle even before the asset is ready; it will “pop in” once loaded.[^asset_server][^asset_handles]
+
+### Code example: feature-scoped handles resource
+
+```rust
+// src/plugins/ui_assets/mod.rs
+use bevy::prelude::*;
+
+#[derive(Resource, Default, Clone)]
+pub struct UiAssets {
+    pub font_ui: Handle<Font>,
+    pub font_mono: Handle<Font>,
+    pub button_bg: Handle<Image>,
+}
+
+pub fn plugin(app: &mut App) {
+    app.init_resource::<UiAssets>()
+        .add_systems(Startup, load_ui_assets);
+}
+
+fn load_ui_assets(asset_server: Res<AssetServer>, mut ui: ResMut<UiAssets>) {
+    ui.font_ui = asset_server.load("fonts/ui/fira_sans_bold.ttf");
+    ui.font_mono = asset_server.load("fonts/debug/fira_mono_medium.ttf");
+    ui.button_bg = asset_server.load("sprites/ui/button_bg.png");
+}
+```
+
+### Alternative: Use an asset collection helper crate
+
+If you want less boilerplate for “collections of handles loaded during a loading state”, a popular approach is `bevy_asset_loader`, which loads collections and only advances to the next state once handles are ready.[^bevy_asset_loader]
+
+---
+
+## 4) Loading flow integrated with `GameState`
+
+### Goal
+
+Avoid “assets pop in randomly” for core screens. Instead:
+
+- In `Loading`, queue loads, show progress UI.
+- Only enter `MainMenu` / `InGame` once required assets are confirmed loaded.
+
+`AssetServer` exists to “kick off new asset loads and retrieve their current load states”.[^asset_server]
+
+### Minimal manual loading state pattern
+
+```rust
+// src/plugins/loading/mod.rs
+use bevy::prelude::*;
+use crate::common::state::GameState;
+
+#[derive(Resource, Default)]
+struct RequiredHandles {
+    // Keep as untyped if you want a single list.
+    handles: Vec<HandleUntyped>,
+}
+
+pub fn plugin(app: &mut App) {
+    app.init_resource::<RequiredHandles>()
+        .add_systems(OnEnter(GameState::Loading), begin_loading)
+        .add_systems(Update, poll_loading.run_if(in_state(GameState::Loading)));
+}
+
+fn begin_loading(asset_server: Res<AssetServer>, mut req: ResMut<RequiredHandles>) {
+    req.handles = vec![
+        asset_server.load_untyped("fonts/ui/fira_sans_bold.ttf"),
+        asset_server.load_untyped("sprites/player/player_idle.png"),
+    ];
+}
+
+fn poll_loading(
+    asset_server: Res<AssetServer>,
+    req: Res<RequiredHandles>,
+    mut next: ResMut<NextState<GameState>>,
+) {
+    let all_loaded = req
+        .handles
+        .iter()
+        .all(|h| asset_server.is_loaded_with_dependencies(h.id()));
+
+    if all_loaded {
+        next.set(GameState::MainMenu);
+    }
+}
+```
+
+> Note: `AssetServer` is designed to track load state for handles and their dependencies.[^asset_server][^asset_handles]
+
+---
+
+## 5) Hot‑reload (dev workflow)
+
+### What it is
+
+Hot-reload means changing an asset file on disk while the game is running and seeing it reload automatically.
+
+`AssetServer` supports “watching for changes”; if enabled, it will watch asset sources and hot-reload them.[^asset_server]
+
+### How to enable it
+
+In Bevy, hot reload is controlled via asset “watch for changes” configuration.
+`AssetPlugin` includes `watch_for_changes_override`, and documents that watching is normally controlled via watcher features and overrides.[^asset_plugin]
+
+```rust
+use bevy::prelude::*;
+use bevy::asset::AssetPlugin;
+
+pub fn enable_hot_reload(app: &mut App) {
+    app.add_plugins(DefaultPlugins.set(AssetPlugin {
+        watch_for_changes_override: Some(true),
+        ..default()
+    }));
+}
+```
+
+### Engineering notes
+
+- Hot-reload is a **dev-only** convenience: keep it behind a dev feature or `cfg!(debug_assertions)`.
+- Some asset types reload more smoothly than others; keep your pipeline resilient to reload events.
+
+(For background reading on the workflow concept: Bevy hot-reloading is opt-in and typically enabled via asset watcher configuration.)[^asset_server][^asset_plugin]
+
+---
+
+## 6) Test strategy for assets and content
+
+You generally want **two** tiers of tests:
+
+### A) Fast path validation (unit test)
+
+Check that your known critical paths exist under `assets/`.
+This catches typos and missing files early without needing Bevy to load anything.
+
+```rust
+#[test]
+fn critical_asset_paths_exist() {
+    let required = [
+        "assets/fonts/ui/fira_sans_bold.ttf",
+        "assets/sprites/player/player_idle.png",
+    ];
+
+    for p in required {
+        assert!(std::path::Path::new(p).exists(), "missing asset: {p}");
+    }
+}
+```
+
+### B) Smoke load test (optional / integration)
+
+If you want to validate that Bevy can resolve asset paths and start loads, create a minimal `App` with the asset system enabled and call `AssetServer::load`.
+`AssetServer` is intended to be used for starting loads and tracking load state.[^asset_server]
+
+> Tip: gate or ignore this test in CI if your environment doesn’t ship assets (or if you run headless builds with reduced features).
+
+---
+
+## 7) Common pitfalls and how to avoid them
+
+### Pitfall: Using hardcoded strings everywhere
+
+Fix: centralize paths in one place (a feature-scoped `*Assets` resource or an asset-collection crate).[^asset_server][^asset_handles]
+
+### Pitfall: Asset paths outside approved directories
+
+Fix: keep runtime assets inside the asset root; `AssetPlugin` documents `unapproved_path_mode` for how loads outside approved directories are handled.[^asset_plugin]
+
+### Pitfall: Hot reload configured inconsistently
+
+Fix: configure hot reload once (near app startup) and treat it as a dev-only feature controlled via `AssetPlugin` watcher settings.[^asset_plugin][^asset_server]
+
+---
+
+# Level / World Representation (Arena, Tiles, Authored Maps, Procedural)
+
+This chapter defines a **world representation strategy** that scales from a simple arena to authored levels and procedural generation, while staying:
+
+- modular (feature plugins own their world pieces)
+- testable (isolated `World` tests)
+- physics-friendly (Avian colliders + collision filtering)
+- state-friendly (levels spawn/despawn on `GameState` transitions)
+
+Avian colliders are created via `Collider` constructors such as `circle`, `rectangle`, and `capsule`, and become physically meaningful when attached to rigid bodies.[^avian_collider]
+Collision filtering is performed through `CollisionLayers` (memberships + filters) and can be backed by an enum derived with `#[derive(PhysicsLayer)]`.[^avian_collision_layers][^avian_physics_layer]
+
+---
+
+## 1) Goals and non-goals
+
+### Goals
+
+- One clear place to define **level geometry** (walls, obstacles, spawn points).
+- A common interface to support:
+  - hardcoded arenas
+  - procedural arenas
+  - authored maps loaded from assets
+  - tiled/grid content
+- Clean teardown when leaving gameplay states.
+
+### Non-goals
+
+- A full editor pipeline (you can adopt one later).
+- Perfect determinism across platforms (separate chapter).
+
+---
+
+## 2) Recommended architecture: `LevelDescriptor` → ECS spawn
+
+### Key idea
+
+Represent the level as a **data descriptor** that is independent of Bevy/Avian, then convert it into ECS entities.
+This gives you:
+
+- unit-testable generation
+- reusable procedural algorithms
+- easy migration to asset-authored maps
+
+---
+
+### Code example: a minimal level descriptor
+
+```rust
+// src/plugins/level/descriptor.rs
+use bevy::prelude::*;
+
+#[derive(Debug, Clone)]
+pub struct LevelDescriptor {
+    pub name: String,
+    pub walls: Vec<WallDesc>,
+    pub spawn_points: Vec<Vec2>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct WallDesc {
+    pub center: Vec2,
+    pub size: Vec2,
+}
+
+impl LevelDescriptor {
+    pub fn simple_arena() -> Self {
+        let half_w = 520.0;
+        let half_h = 300.0;
+        let thickness = 30.0;
+
+        let walls = vec![
+            WallDesc { center: Vec2::new(0.0, half_h + thickness * 0.5), size: Vec2::new(half_w * 2.0 + thickness * 2.0, thickness) },
+            WallDesc { center: Vec2::new(0.0, -half_h - thickness * 0.5), size: Vec2::new(half_w * 2.0 + thickness * 2.0, thickness) },
+            WallDesc { center: Vec2::new(-half_w - thickness * 0.5, 0.0), size: Vec2::new(thickness, half_h * 2.0) },
+            WallDesc { center: Vec2::new(half_w + thickness * 0.5, 0.0), size: Vec2::new(thickness, half_h * 2.0) },
+        ];
+
+        let spawn_points = vec![Vec2::new(-200.0, 0.0), Vec2::new(200.0, 0.0)];
+
+        Self { name: "SimpleArena".into(), walls, spawn_points }
+    }
+}
+```
+
+---
+
+## 3) Spawning world geometry (Avian colliders + collision layers)
+
+### Key idea
+
+- Walls are usually `RigidBody::Static` with `Collider::rectangle(w, h)`.[^avian_collider]
+- Use `CollisionLayers` to prevent unnecessary collision checks (e.g., bullets shouldn’t collide with bullets).[^^avian_collision_layers]
+
+### Code example: a `level` plugin that spawns on `OnEnter(InGame)`
+
+```rust
+// src/plugins/level/mod.rs
+use bevy::prelude::*;
+use bevy::state::state_scoped::DespawnOnExit;
+use avian2d::prelude::*;
+
+use crate::common::state::GameState;
+use crate::common::layers::Layer;
+
+mod descriptor;
+use descriptor::LevelDescriptor;
+
+#[derive(Component)]
+pub struct LevelRoot;
+
+pub fn plugin(app: &mut App) {
+    app.add_systems(OnEnter(GameState::InGame), spawn_level);
+}
+
+fn spawn_level(mut commands: Commands) {
+    let level = LevelDescriptor::simple_arena();
+
+    // Root entity to tag the level.
+    commands.spawn((
+        LevelRoot,
+        Name::new(format!("Level:{}", level.name)),
+        // Despawn level when leaving InGame.
+        DespawnOnExit(GameState::InGame),
+    ));
+
+    let wall_layers = CollisionLayers::new(
+        Layer::World,
+        [Layer::Player, Layer::Enemy, Layer::PlayerBullet, Layer::EnemyBullet],
+    );
+
+    for (i, w) in level.walls.iter().enumerate() {
+        commands.spawn((
+            Name::new(format!("Wall{i}")),
+            Transform::from_translation(w.center.extend(0.0)),
+            RigidBody::Static,
+            Collider::rectangle(w.size.x, w.size.y),
+            wall_layers,
+            DespawnOnExit(GameState::InGame),
+        ));
+    }
+
+    for (i, p) in level.spawn_points.iter().enumerate() {
+        commands.spawn((
+            Name::new(format!("SpawnPoint{i}")),
+            Transform::from_translation(p.extend(0.0)),
+            DespawnOnExit(GameState::InGame),
+        ));
+    }
+}
+```
+
+`DespawnOnExit<S>` is the state-scoped cleanup marker: entities with this component are removed when the state no longer matches the given value.[^bevy_despawn_on_exit]
+
+**Note on collision filtering:** `CollisionLayers` stores memberships and filters. Two colliders interact only when each one’s memberships overlap the other’s filters.[^avian_collision_layers]
+
+---
+
+## 4) Collision layers as a project-wide contract
+
+### Why
+
+Collision layers are both a correctness feature and a performance feature.
+Avian explicitly defines a bitmask-based layer system (`CollisionLayers` + `PhysicsLayer`) intended for excluding interactions between unrelated objects.[^avian_collision_layers][^avian_physics_layer]
+
+### Code example: a shared layer enum
+
+```rust
+// src/common/layers.rs
+use avian2d::prelude::*;
+
+#[derive(PhysicsLayer, Default, Clone, Copy, Debug)]
+pub enum Layer {
+    #[default]
+    Default,
+    World,
+    Player,
+    Enemy,
+    PlayerBullet,
+    EnemyBullet,
+}
+```
+
+---
+
+## 5) Supporting multiple world sources
+
+You generally want **three** sources of level data:
+
+1) **Hardcoded** descriptor functions (`LevelDescriptor::simple_arena()`) — fastest iteration.
+2) **Procedural** generator (`fn generate(seed) -> LevelDescriptor`) — replayable content.
+3) **Authored** data assets (`ron/json`) — designers/editors.
+
+Bevy’s `AssetServer` is designed to load assets asynchronously from the configured asset folder and return handles immediately.[^bevy_asset_server]
+This makes it suitable for loading authored map files during a `Loading` state.
+
+### A) Procedural generation contract
+
+```rust
+pub fn generate_arena(seed: u64) -> LevelDescriptor {
+    // Pure function: deterministic from seed.
+    // Return walls/spawn points.
+    LevelDescriptor::simple_arena()
+}
+```
+
+### A.1) Procedural generation example (seeded arena)
+
+A good procedural generator for early development should be:
+
+- **pure** (no ECS access)
+- **seeded** (replayable)
+- **bounded** (never spawns geometry outside the arena)
+- **simple to test** (same seed → same descriptor)
+
+Below is a self-contained example using a tiny deterministic PRNG (no extra dependencies).
+It generates:
+
+- a rectangular boundary (4 walls)
+- `N` random rectangular obstacles inside the arena
+- a few spawn points on a circle
+
+```rust
+// src/plugins/level/generation.rs
+use bevy::prelude::*;
+
+use super::descriptor::{LevelDescriptor, WallDesc};
+
+/// Tiny deterministic PRNG (xorshift64*)
+///
+/// - Fast
+/// - Deterministic
+/// - Good enough for procedural layout
+#[derive(Clone, Copy)]
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        // avoid zero seed degeneracy
+        Self(seed ^ 0x9E37_79B9_7F4A_7C15)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn next_f32(&mut self) -> f32 {
+        // Use upper 24 bits for a float in [0,1)
+        let v = (self.next_u64() >> 40) as u32;
+        (v as f32) / (1u32 << 24) as f32
+    }
+
+    fn range_f32(&mut self, lo: f32, hi: f32) -> f32 {
+        lo + (hi - lo) * self.next_f32()
+    }
+}
+
+/// Generate a replayable arena with obstacles.
+///
+/// All numbers are in world units (pixels if you're using pixel-based transforms).
+pub fn generate_arena(seed: u64) -> LevelDescriptor {
+    let mut rng = Rng::new(seed);
+
+    // Arena size (inside boundary)
+    let half_w = 520.0;
+    let half_h = 300.0;
+    let thickness = 30.0;
+
+    // Boundary walls
+    let mut walls = vec![
+        WallDesc { center: Vec2::new(0.0, half_h + thickness * 0.5), size: Vec2::new(half_w * 2.0 + thickness * 2.0, thickness) },
+        WallDesc { center: Vec2::new(0.0, -half_h - thickness * 0.5), size: Vec2::new(half_w * 2.0 + thickness * 2.0, thickness) },
+        WallDesc { center: Vec2::new(-half_w - thickness * 0.5, 0.0), size: Vec2::new(thickness, half_h * 2.0) },
+        WallDesc { center: Vec2::new(half_w + thickness * 0.5, 0.0), size: Vec2::new(thickness, half_h * 2.0) },
+    ];
+
+    // Random interior obstacles
+    // Keep a margin so obstacles don't overlap boundary
+    let margin = 60.0;
+    let obstacle_count = 12;
+
+    for _ in 0..obstacle_count {
+        let w = rng.range_f32(40.0, 140.0);
+        let h = rng.range_f32(40.0, 140.0);
+        let x = rng.range_f32(-half_w + margin, half_w - margin);
+        let y = rng.range_f32(-half_h + margin, half_h - margin);
+        walls.push(WallDesc { center: Vec2::new(x, y), size: Vec2::new(w, h) });
+    }
+
+    // Spawn points on a circle
+    let spawn_radius = 220.0;
+    let spawn_points = (0..4)
+        .map(|i| {
+            let a = i as f32 * std::f32::consts::TAU / 4.0;
+            Vec2::new(a.cos(), a.sin()) * spawn_radius
+        })
+        .collect::<Vec<_>>();
+
+    LevelDescriptor {
+        name: format!("ProcArena_{seed}"),
+        walls,
+        spawn_points,
+    }
+}
+```
+
+#### Testing the generator (determinism + bounds)
+
+```rust
+// src/plugins/level/generation_tests.rs
+use bevy::prelude::*;
+
+use super::generate_arena;
+
+#[test]
+fn same_seed_same_level() {
+    let a = generate_arena(123);
+    let b = generate_arena(123);
+
+    assert_eq!(a.walls.len(), b.walls.len());
+    assert_eq!(a.spawn_points.len(), b.spawn_points.len());
+
+    // Spot-check some fields for equality
+    assert_eq!(a.walls[0].center, b.walls[0].center);
+    assert_eq!(a.walls[3].size, b.walls[3].size);
+}
+
+#[test]
+fn spawn_points_are_reasonable() {
+    let lvl = generate_arena(999);
+    for p in &lvl.spawn_points {
+        assert!(p.length() > 100.0);
+        assert!(p.length() < 400.0);
+    }
+}
+```
+
+> Tip: once this works, you can upgrade to more advanced techniques (Poisson-disc sampling, room graphs, BSP splits) while keeping the same `LevelDescriptor` interface.
+
+### B) Authored map contract (data → descriptor)
+
+```rust
+// Pseudocode: parse JSON/RON into LevelDescriptor
+// fn load_descriptor(bytes: &[u8]) -> anyhow::Result<LevelDescriptor>
+```
+
+---
+
+## 6) Tiles / grids (when to use them)
+
+Use a tile/grid representation when:
+
+- level geometry is mostly axis-aligned blocks
+- you want pathfinding on a grid
+- you want easy procedural room generation
+
+**Hybrid approach (recommended):**
+
+- author/generate a tilemap for layout
+- compile it into:
+  - ECS entities for visuals
+  - a small number of merged colliders for physics (fewer bodies is faster)
+
+Avian colliders can be composed via compound colliders or by attaching multiple colliders as child entities.[^avian_collider]
+This is a natural fit for “merge tiles into rectangles” optimizations.
+
+---
+
+## 7) Lighting/occlusion integration (Firefly-friendly)
+
+If you use Firefly, your world representation should also support:
+
+- occluder geometry (walls that block light)
+- light placement markers
+
+Best practice: store these as additional arrays in `LevelDescriptor` (e.g., `occluders: Vec<WallDesc>`, `lights: Vec<LightDesc>`), then spawn them in a render-only plugin.
+
+---
+
+## 8) Testing the world pipeline
+
+### A) Unit test: descriptor generator is deterministic
+
+```rust
+#[test]
+fn simple_arena_has_four_walls() {
+    let lvl = LevelDescriptor::simple_arena();
+    assert_eq!(lvl.walls.len(), 4);
+    assert!(lvl.spawn_points.len() >= 1);
+}
+```
+
+### B) Unit/system test: spawning produces expected entities
+
+Because world spawning uses `Commands`, use your helper that flushes deferred commands after running systems.
+
+```rust
+use bevy::prelude::*;
+use crate::common::test_utils::run_system_once;
+
+#[test]
+fn spawn_level_creates_walls() {
+    let mut world = World::new();
+
+    // Run the system directly (no states needed for this unit test).
+    run_system_once(&mut world, crate::plugins::level::spawn_level);
+
+    let wall_count = world
+        .query::<&Name>()
+        .iter(&world)
+        .filter(|n| n.as_str().starts_with("Wall"))
+        .count();
+
+    assert_eq!(wall_count, 4);
+}
+```
+
+### C) Integration test: state-scoped despawn works
+
+This verifies the state boundary contract: level entities are cleaned up when leaving `InGame`.
+
+```rust
+use bevy::prelude::*;
+use bevy::state::app::StatesPlugin;
+
+use crate::common::state::GameState;
+
+#[test]
+fn leaving_ingame_despawns_level_entities() {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, StatesPlugin));
+    app.init_state::<GameState>();
+
+    crate::plugins::level::plugin(&mut app);
+
+    // Enter InGame => spawn.
+    app.world_mut().resource_mut::<NextState<GameState>>().set(GameState::InGame);
+    app.update();
+
+    let walls_before = app.world().query::<&Name>().iter(app.world()).filter(|n| n.as_str().starts_with("Wall")).count();
+    assert_eq!(walls_before, 4);
+
+    // Leave InGame => DespawnOnExit triggers.
+    app.world_mut().resource_mut::<NextState<GameState>>().set(GameState::MainMenu);
+    app.update();
+
+    let walls_after = app.world().query::<&Name>().iter(app.world()).filter(|n| n.as_str().starts_with("Wall")).count();
+    assert_eq!(walls_after, 0);
+}
+```
+
+---
+
+## 9) Common pitfalls and fixes
+
+### Pitfall: too many colliders
+
+Fix: merge tiles into larger rectangles and/or use compound colliders. Avian supports multiple colliders per body (via children) and compound colliders.[^avian_collider]
+
+### Pitfall: collision layers not explicit
+
+Fix: define a single `Layer` enum and treat `CollisionLayers` rules as a contract enforced by tests (e.g., bullets never collide with bullets).[^avian_collision_layers][^avian_physics_layer]
+
+### Pitfall: level teardown leaks entities
+
+Fix: tag world entities with `DespawnOnExit(GameState::InGame)` to ensure they are removed when leaving gameplay.[^bevy_despawn_on_exit]
+
+---
+
+# Seeding Procedural Maps (Replayable, Debuggable, Testable)
+
+This chapter documents a robust way to **seed procedural level generation** in a Bevy project, including:
+
+- a `MapSeed` resource model
+- seeding patterns for “runs” (roguelite-style)
+- a **seed source priority** strategy (CLI → env → config → random)
+- testing patterns (pure generator determinism + ECS spawn uses seed)
+- common pitfalls (deferred `Commands`, reproducibility drift)
+
+In Bevy ECS, a `Resource` is a singleton value stored in the `World` and accessed from systems via `Res` / `ResMut`.[^bevy_resource_trait][^bevy_resources_guide]
+
+---
+
+## 1) The core model: `MapSeed` as a `Resource`
+
+A map seed is global per run/session, so it naturally fits Bevy’s `Resource` model: one instance per `World`.[^bevy_resource_trait]
+
+```rust
+// src/plugins/level/seed.rs
+use bevy::prelude::*;
+
+/// Single source of truth for procedural generation.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct MapSeed(pub u64);
+```
+
+### Why a resource?
+
+- You can set it once at app startup or when a new run begins.
+- Any system can read it via `Res<MapSeed>` without plumbing it through entity components.
+- Tests can insert it directly into a `World`.
+
+Resources are designed to store globally unique data like settings, score, or asset collections.[^bevy_resources_guide]
+
+---
+
+## 2) Two ways to set the seed
+
+### A) “Fixed seed” for debugging
+
+Fixed seeds are perfect when iterating on level generation:
+
+```rust
+use bevy::prelude::*;
+use crate::plugins::level::seed::MapSeed;
+
+pub fn configure_game(app: &mut App) {
+    // Deterministic dev seed.
+    app.insert_resource(MapSeed(12345));
+}
+```
+
+### B) “Run seed” for roguelite flows
+
+Treat the seed as part of a per-run configuration resource:
+
+```rust
+use bevy::prelude::*;
+
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct RunConfig {
+    pub seed: u64,
+    pub difficulty: u8,
+}
+
+fn start_new_run(world: &mut World) {
+    // Insert directly into the World if you need it immediately.
+    world.insert_resource(RunConfig { seed: 987_654_321, difficulty: 1 });
+}
+```
+
+> Note: inserting via `Commands` is deferred and might not be visible to later systems in the same tick.
+> If you need immediate availability, insert via `World` (exclusive access) or schedule `apply_deferred` between systems.
+> Bevy maintainers discuss this exact footgun and the available fixes.[^bevy_commands_deferred]
+
+---
+
+## 3) Seed source priority pattern (CLI → env → config → random)
+
+A practical and production-friendly approach is:
+
+1. **CLI**: `--seed <u64>` (highest priority)
+2. **Env var**: `GAME_SEED=<u64>`
+3. **Config file**: `config/seed.txt` (or your settings format)
+4. **Fallback**: random seed (log it!)
+
+This pattern ensures reproducibility while giving power-users an explicit override.
+
+---
+
+### Code example: seed resolution (no external dependencies)
+
+This implementation uses:
+
+- `std::env::args()` for CLI parsing
+- `std::env::var()` for env var
+- a tiny text file format for config (`seed.txt` contains a single integer)
+- a fallback “random-ish” seed derived from system time
+
+```rust
+// src/plugins/level/seed_source.rs
+use std::{env, fs, time::{SystemTime, UNIX_EPOCH}};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedSource {
+    Cli,
+    Env,
+    Config,
+    Random,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedSeed {
+    pub seed: u64,
+    pub source: SeedSource,
+}
+
+pub fn resolve_seed() -> ResolvedSeed {
+    // 1) CLI: --seed <u64>
+    if let Some(seed) = seed_from_cli() {
+        return ResolvedSeed { seed, source: SeedSource::Cli };
+    }
+
+    // 2) Env: GAME_SEED=<u64>
+    if let Ok(v) = env::var("GAME_SEED") {
+        if let Ok(seed) = v.trim().parse::<u64>() {
+            return ResolvedSeed { seed, source: SeedSource::Env };
+        }
+    }
+
+    // 3) Config: config/seed.txt
+    if let Ok(s) = fs::read_to_string("config/seed.txt") {
+        if let Ok(seed) = s.trim().parse::<u64>() {
+            return ResolvedSeed { seed, source: SeedSource::Config };
+        }
+    }
+
+    // 4) Fallback: time-based seed
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+
+    ResolvedSeed { seed, source: SeedSource::Random }
+}
+
+fn seed_from_cli() -> Option<u64> {
+    let mut args = env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--seed" {
+            return args.next().and_then(|s| s.parse::<u64>().ok());
+        }
+    }
+    None
+}
+```
+
+### Wire it into Bevy
+
+```rust
+use bevy::prelude::*;
+use crate::plugins::level::seed::MapSeed;
+use crate::plugins::level::seed_source::resolve_seed;
+
+pub fn configure_game(app: &mut App) {
+    let resolved = resolve_seed();
+    info!(?resolved, "resolved map seed");
+
+    app.insert_resource(MapSeed(resolved.seed));
+}
+```
+
+---
+
+## 4) Using the seed to build a level descriptor
+
+Best practice:
+
+- Keep generation as a **pure function** `seed → LevelDescriptor`.
+- Keep ECS spawning separate: `LevelDescriptor → Commands`.
+
+This ensures deterministic and testable generation.
+
+```rust
+use bevy::prelude::*;
+use crate::plugins::level::seed::MapSeed;
+use crate::plugins::level::generation::generate_arena;
+
+fn spawn_level_from_seed(mut commands: Commands, seed: Res<MapSeed>) {
+    let desc = generate_arena(seed.0);
+
+    for (i, wall) in desc.walls.iter().enumerate() {
+        commands.spawn((
+            Name::new(format!("Wall{i}")),
+            Transform::from_translation(wall.center.extend(0.0)),
+            // Add physics & collision layers here...
+        ));
+    }
+}
+```
+
+---
+
+## 5) Testing procedural seeding
+
+### A) Pure unit tests: determinism
+
+```rust
+#[test]
+fn same_seed_same_descriptor() {
+    let a = generate_arena(42);
+    let b = generate_arena(42);
+
+    assert_eq!(a.walls.len(), b.walls.len());
+    assert_eq!(a.spawn_points, b.spawn_points);
+    assert_eq!(a.walls[0].center, b.walls[0].center);
+}
+```
+
+### B) ECS/system tests: the seed resource drives spawning
+
+Because `MapSeed` is a `Resource`, tests can insert it directly into a `World` and run the system.
+
+```rust
+use bevy::prelude::*;
+use crate::common::test_utils::run_system_once;
+use crate::plugins::level::seed::MapSeed;
+
+#[test]
+fn spawn_uses_seed_resource() {
+    let mut world = World::new();
+    world.insert_resource(MapSeed(123));
+
+    run_system_once(&mut world, spawn_level_from_seed);
+
+    let wall_count = world
+        .query::<&Name>()
+        .iter(&world)
+        .filter(|n| n.as_str().starts_with("Wall"))
+        .count();
+
+    assert!(wall_count > 0);
+}
+```
+
+Resources are inserted and accessed as singletons in the `World` by type.[^bevy_resource_trait]
+
+---
+
+## 6) Operational best practices
+
+### Always log the seed
+
+- Put it in the console on startup.
+- Put it in the debug HUD.
+- Include the source (`Cli/Env/Config/Random`) for traceability.
+
+### Keep the generator stable
+
+If you change your RNG algorithm or generation rules, old seeds may no longer reproduce the same maps.
+If you care about backward-compatible seeds, version your generator:
+
+- `ProcArena_v1(seed)`
+- `ProcArena_v2(seed)`
+
+---
+
+## 7) Common pitfalls and fixes
+
+### Pitfall: “I set the seed but the level didn’t use it”
+
+Cause: you inserted the seed via `Commands` and another system read it before the command buffer was applied.
+
+Fix:
+
+- insert via `World` (exclusive)
+- or insert via app builder (`app.insert_resource`)
+- or schedule `apply_deferred` between producer and consumer
+
+Bevy maintainers explicitly call out this issue and list these fixes.[^bevy_commands_deferred]
+
+### Pitfall: non-determinism from other global randomness
+
+Fix:
+
+- avoid `rand::random()` inside the generator
+- avoid reading current time inside the generator
+- pass all entropy in explicitly via the seed
+
+---
+
 ## References
 
+[^bevy_resource_trait]: Bevy ECS `Resource` trait docs (singleton data in World, access via `Res`/`ResMut`): <https://docs.rs/bevy_ecs/latest/bevy_ecs/resource/trait.Resource.html>
+[^bevy_resources_guide]: Bevy Quick Start — Resources (why/when to use resources, insertion patterns): <https://bevy.org/learn/quick-start/getting-started/resources/>
+[^bevy_commands_deferred]: Bevy discussion: commands insert_resource is deferred; suggestions include apply_deferred / FromWorld / exclusive World insertion: <https://github.com/bevyengine/bevy/discussions/9763>
+[^avian_collider]: Avian2D `Collider` docs (shape constructors, rigid body attachment, multiple colliders): <https://docs.rs/avian2d/latest/avian2d/collision/collider/struct.Collider.html>
+[^avian_collision_layers]: Avian2D `CollisionLayers` docs (memberships/filters compatibility rules): <https://docs.rs/avian2d/latest/avian2d/collision/collider/struct.CollisionLayers.html>
+[^avian_physics_layer]: Avian2D `PhysicsLayer` docs (derive for enums used by CollisionLayers): <https://docs.rs/avian2d/latest/avian2d/collision/collider/trait.PhysicsLayer.html>
+[^bevy_despawn_on_exit]: Bevy `DespawnOnExit` docs (state-scoped cleanup behavior): <https://docs.rs/bevy/latest/bevy/state/state_scoped/struct.DespawnOnExit.html>
+[^bevy_asset_server]: Bevy `AssetServer` docs (async loading, default assets folder): <https://docs.rs/bevy/latest/bevy/asset/struct.AssetServer.html>
+[^asset_handles]: DeepWiki: Bevy Asset Loading and Handles (handles, dependencies, load states): <https://deepwiki.com/bevyengine/bevy/4.1-asset-loading-and-handles>
+[^asset_server]: Bevy `AssetServer` docs (loading process, default asset folder, watching for changes): <https://docs.rs/bevy/latest/bevy/asset/struct.AssetServer.html>
+[^asset_plugin]: Bevy `AssetPlugin` docs (asset root paths, watch_for_changes_override, unapproved_path_mode): <https://docs.rs/bevy/latest/bevy/asset/struct.AssetPlugin.html>
+[^bevy_asset_loader]: `bevy_asset_loader` README (asset collections + loading states pattern): <https://github.com/NiklasEi/bevy_asset_loader>
 [^bevy_state]: Bevy state module docs (transition schedules, `NextState`, `in_state`): <https://docs.rs/bevy/latest/bevy/state/index.html>
 [^states_plugin]: Bevy `StatesPlugin` docs (registers `StateTransition` schedule): <https://docs.rs/bevy/latest/bevy/state/app/struct.StatesPlugin.html>
 [^state_scoped]: Bevy `state_scoped` docs (`DespawnOnEnter` / `DespawnOnExit`): <https://docs.rs/bevy/latest/bevy/state/state_scoped/index.html>
