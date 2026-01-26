@@ -11,6 +11,10 @@ pub struct Tunables {
 
 impl Default for Tunables {
     fn default() -> Self {
-        Self { pixels_per_meter: 20.0, player_speed: 420.0, bullet_speed: 900.0 }
+        Self {
+            pixels_per_meter: 20.0,
+            player_speed: 420.0,
+            bullet_speed: 900.0,
+        }
     }
 }

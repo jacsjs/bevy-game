@@ -23,7 +23,11 @@ fn setup(mut commands: Commands) {
     commands.spawn((
         Name::new("PlayerLight"),
         PlayerLight,
-        PointLight2d { color: Color::srgb(1.0, 0.9, 0.75), range: 450.0, ..default() },
+        PointLight2d {
+            color: Color::srgb(1.0, 0.9, 0.75),
+            range: 450.0,
+            ..default()
+        },
         Transform::from_xyz(0.0, 0.0, 10.0),
         DespawnOnExit(GameState::InGame),
     ));
@@ -33,8 +37,12 @@ fn follow_player_light(
     q_player: Query<&Transform, (With<Player>, Without<PlayerLight>)>,
     mut q_light: Query<&mut Transform, (With<PlayerLight>, Without<Player>)>,
 ) {
-    let Ok(tf_player) = q_player.single() else { return; };
-    let Ok(mut tf_light) = q_light.single_mut() else { return; };
+    let Ok(tf_player) = q_player.single() else {
+        return;
+    };
+    let Ok(mut tf_light) = q_light.single_mut() else {
+        return;
+    };
 
     tf_light.translation.x = tf_player.translation.x;
     tf_light.translation.y = tf_player.translation.y;

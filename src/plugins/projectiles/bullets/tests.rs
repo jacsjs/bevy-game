@@ -1,10 +1,15 @@
-use bevy::prelude::*;
 use avian2d::prelude::*;
+use bevy::prelude::*;
 
 use crate::common::test_utils::run_system_once;
 
 fn write_collision(world: &mut World, a: Entity, b: Entity) {
-    world.write_message(CollisionStart { collider1: a, collider2: b, body1: None, body2: None });
+    world.write_message(CollisionStart {
+        collider1: a,
+        collider2: b,
+        body1: None,
+        body2: None,
+    });
 }
 
 #[test]

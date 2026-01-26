@@ -12,4 +12,3 @@ pub enum Layer {
     PlayerBullet,
     EnemyBullet,
 }
-

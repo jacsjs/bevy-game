@@ -1,7 +1,7 @@
 //! Core plugin: shared resources and global settings.
 
-use bevy::prelude::*;
 use crate::common::tunables::Tunables;
+use bevy::prelude::*;
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(Tunables::default());
@@ -10,4 +10,3 @@ pub fn plugin(app: &mut App) {
 
 #[cfg(test)]
 mod tests;
-

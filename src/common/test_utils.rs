@@ -1,4 +1,3 @@
-
 //! Test helpers.
 //!
 //! Bevy provides `World::run_system_once` (via the `RunSystemOnce` trait) for quickly
@@ -8,8 +7,8 @@
 //! `ApplyDeferred` / schedule boundaries. We call `world.flush()` after running so queued commands
 //! are applied before assertions. [2](https://docs.rs/bevy/latest/bevy/prelude/struct.Commands.html)[3](https://deepwiki.com/bevyengine/bevy/2.5-commands-and-deferred-operations)
 
-use bevy::prelude::*;
 use bevy::ecs::system::{IntoSystem, RunSystemOnce};
+use bevy::prelude::*;
 
 /// Run a system once on the given world, then flush deferred commands.
 /// Returns the system output.
@@ -21,4 +20,3 @@ where
     world.flush();
     out
 }
-

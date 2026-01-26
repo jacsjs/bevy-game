@@ -15,7 +15,10 @@ pub struct MainCamera;
 
 pub fn plugin(app: &mut App) {
     app.add_systems(OnEnter(GameState::InGame), spawn_camera)
-        .add_systems(PostUpdate, follow_player.before(TransformSystems::Propagate));
+        .add_systems(
+            PostUpdate,
+            follow_player.before(TransformSystems::Propagate),
+        );
 }
 
 fn spawn_camera(mut commands: Commands) {
@@ -33,8 +36,12 @@ fn follow_player(
     q_player: Query<&Transform, (With<Player>, Without<MainCamera>)>,
     mut q_cam: Query<&mut Transform, (With<MainCamera>, Without<Player>)>,
 ) {
-    let Ok(tf_player) = q_player.single() else { return; };
-    let Ok(mut tf_cam) = q_cam.single_mut() else { return; };
+    let Ok(tf_player) = q_player.single() else {
+        return;
+    };
+    let Ok(mut tf_cam) = q_cam.single_mut() else {
+        return;
+    };
 
     tf_cam.translation.x = tf_player.translation.x;
     tf_cam.translation.y = tf_player.translation.y;

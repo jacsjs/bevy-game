@@ -1,6 +1,6 @@
-use bevy::prelude::*;
-use crate::plugins::core;
 use crate::common::tunables::Tunables;
+use crate::plugins::core;
+use bevy::prelude::*;
 
 #[test]
 fn inserts_resources() {

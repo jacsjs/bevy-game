@@ -1,11 +1,11 @@
+use avian2d::prelude::*;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
-use avian2d::prelude::*;
 
 use crate::common::{layers::Layer, state::GameState, tunables::Tunables};
 use crate::plugins::camera::MainCamera;
-use crate::plugins::player::Player;
 use crate::plugins::enemies::Enemy;
+use crate::plugins::player::Player;
 
 use super::{Bullet, Lifetime};
 
@@ -27,16 +27,30 @@ pub fn spawn_player_bullets(
         return;
     }
 
-    let Ok(player_tf) = q_player.single() else { return; };
-    let Ok((camera, camera_tf)) = q_camera.single() else { return; };
-    let Ok(window) = windows.single() else { return; };
+    let Ok(player_tf) = q_player.single() else {
+        return;
+    };
+    let Ok((camera, camera_tf)) = q_camera.single() else {
+        return;
+    };
+    let Ok(window) = windows.single() else {
+        return;
+    };
 
-    let Some(cursor) = window.cursor_position() else { return; };
-    let Ok(world_cursor) = camera.viewport_to_world_2d(camera_tf, cursor) else { return; };
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+    let Ok(world_cursor) = camera.viewport_to_world_2d(camera_tf, cursor) else {
+        return;
+    };
 
     let origin = player_tf.translation.truncate();
     let dir = world_cursor - origin;
-    let dir = if dir.length_squared() > 0.001 { dir.normalize() } else { Vec2::Y };
+    let dir = if dir.length_squared() > 0.001 {
+        dir.normalize()
+    } else {
+        Vec2::Y
+    };
 
     let layers = CollisionLayers::new(Layer::PlayerBullet, [Layer::World, Layer::Enemy]);
 
@@ -48,7 +62,11 @@ pub fn spawn_player_bullets(
         Name::new("Bullet"),
         Bullet { damage: 1 },
         Lifetime(Timer::from_seconds(3.0, TimerMode::Once)),
-        Sprite { color: Color::srgb(1.0, 0.85, 0.3), custom_size: Some(Vec2::splat(8.0)), ..default() },
+        Sprite {
+            color: Color::srgb(1.0, 0.85, 0.3),
+            custom_size: Some(Vec2::splat(8.0)),
+            ..default()
+        },
         Transform::from_translation((origin + dir * 18.0).extend(2.0)),
         RigidBody::Dynamic,
         Collider::circle(4.0),
@@ -56,10 +74,8 @@ pub fn spawn_player_bullets(
         restitution,
         friction,
         LinearVelocity(dir * tunables.bullet_speed),
-
         // Opt-in collision events: Avian only emits CollisionStart/End if one collider has this marker.
         CollisionEventsEnabled,
-
         DespawnOnExit(GameState::InGame),
     ));
 }

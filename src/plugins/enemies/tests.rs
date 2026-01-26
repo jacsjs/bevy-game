@@ -1,6 +1,6 @@
-use bevy::prelude::*;
 use crate::common::test_utils::run_system_once;
 use crate::plugins::enemies;
+use bevy::prelude::*;
 
 #[test]
 fn spawns_three_targets() {

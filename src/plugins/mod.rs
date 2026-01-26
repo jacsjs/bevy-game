@@ -3,11 +3,11 @@
 use bevy::prelude::*;
 
 pub mod core;
-pub mod physics;
-pub mod world;
-pub mod player;
 pub mod enemies;
+pub mod physics;
+pub mod player;
 pub mod projectiles;
+pub mod world;
 
 // Render-only
 pub mod camera;

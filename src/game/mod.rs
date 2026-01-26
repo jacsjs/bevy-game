@@ -11,9 +11,7 @@ use crate::common::state::GameState;
 use crate::plugins;
 
 pub fn run() {
-    App::new()
-        .add_plugins(configure_full)
-        .run();
+    App::new().add_plugins(configure_full).run();
 }
 
 /// Full configuration for `cargo run`.
