@@ -23,11 +23,20 @@ struct PlayerInput {
     move_axis: Vec2,
 }
 
+
 pub fn plugin(app: &mut App) {
     app.insert_resource(PlayerInput::default())
         .add_systems(OnEnter(GameState::InGame), spawn)
-        .add_systems(Update, gather_input)
-        .add_systems(FixedUpdate, apply_movement);
+
+        // 1) sample input early to avoid phase mismatch with fixed physics
+        .add_systems(PreUpdate, gather_input)
+
+        // 2) write velocity in the same schedule physics uses, right before the step
+        // Issue: https://github.com/avianphysics/avian/issues/358 
+        .add_systems(
+            FixedPostUpdate,
+            apply_movement.before(PhysicsSystems::StepSimulation),
+        );
 }
 
 fn spawn(mut commands: Commands) {
@@ -45,13 +54,19 @@ fn spawn(mut commands: Commands) {
             ..default()
         },
         Transform::from_xyz(0.0, 0.0, 1.0),
+
         RigidBody::Kinematic,
         Collider::circle(13.0),
         layers,
         LinearVelocity::ZERO,
+
+        // Smooth translation between fixed physics ticks
+        TranslationInterpolation,
+
         DespawnOnExit(GameState::InGame),
     ));
 }
+
 
 fn gather_input(keys: Res<ButtonInput<KeyCode>>, mut input: ResMut<PlayerInput>) {
     let mut axis = Vec2::ZERO;
