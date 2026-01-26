@@ -40,7 +40,6 @@ fn apply_movement_sets_velocity() {
     assert_eq!(v.0, Vec2::new(100.0, 0.0));
 }
 
-
 #[test]
 fn spawn_enables_translation_interpolation() {
     let mut world = World::new();
@@ -48,12 +47,18 @@ fn spawn_enables_translation_interpolation() {
 
     // Assert that the player entity has TranslationInterpolation.
     let has = world
-        .query::<(&super::Player, &avian2d::interpolation::TranslationInterpolation)>()
+        .query::<(
+            &super::Player,
+            &avian2d::interpolation::TranslationInterpolation,
+        )>()
         .iter(&world)
         .next()
         .is_some();
 
-    assert!(has, "Player should opt-in to interpolation via TranslationInterpolation");
+    assert!(
+        has,
+        "Player should opt-in to interpolation via TranslationInterpolation"
+    );
 }
 
 #[derive(Resource, Default)]
@@ -108,4 +113,3 @@ fn movement_runs_before_physics_step_simulation() {
     let observed = app.world().resource::<ObservedVel>().0;
     assert_eq!(observed, Some(Vec2::new(100.0, 0.0)));
 }
-

@@ -5,7 +5,6 @@ use bevy::prelude::*;
 
 #[test]
 fn bullet_hit_despawns_entities() {
-
     // Configure your headless game (states + gameplay plugins)
     let mut app = common::app_headless();
 

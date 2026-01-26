@@ -2,12 +2,14 @@
 
 use bevy::prelude::*;
 
+use crate::plugins::ui::debug_hud;
+
 pub mod core;
-pub mod debug_tools;
 pub mod enemies;
 pub mod physics;
 pub mod player;
 pub mod projectiles;
+pub mod ui;
 pub mod world;
 
 // Render-only
@@ -22,6 +24,7 @@ pub fn register_gameplay(app: &mut App) {
     player::plugin(app);
     enemies::plugin(app);
     projectiles::plugin(app);
+    debug_hud::plugin(app);
 }
 
 /// Register render-only plugins (requires DefaultPlugins / render infra).
