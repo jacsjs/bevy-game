@@ -17,15 +17,13 @@ use super::{Bullet, Lifetime};
 /// - `CollisionEventsEnabled` is attached only to bullets to opt-in collision events.
 pub fn spawn_player_bullets(
     mut commands: Commands,
-    buttons: Res<ButtonInput<MouseButton>>,
+    buttons: Option<Res<ButtonInput<MouseButton>>>,
     windows: Query<&Window>,
     q_camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     q_player: Query<&Transform, With<Player>>,
     tunables: Res<Tunables>,
 ) {
-    if !buttons.just_pressed(MouseButton::Left) {
-        return;
-    }
+    let Some(_buttons) = buttons else { return; };
 
     let Ok(player_tf) = q_player.single() else {
         return;

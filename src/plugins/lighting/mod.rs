@@ -15,8 +15,13 @@ pub fn plugin(app: &mut App) {
         app.add_plugins(FireflyPlugin);
     }
 
-    app.add_systems(OnEnter(GameState::InGame), setup)
-        .add_systems(Update, follow_player_light);
+    app.add_systems(OnEnter(GameState::InGame), setup);
+        
+    app.add_systems(
+        PostUpdate,
+        follow_player_light.before(TransformSystems::Propagate),
+    );
+
 }
 
 fn setup(mut commands: Commands) {

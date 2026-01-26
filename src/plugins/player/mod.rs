@@ -68,7 +68,10 @@ fn spawn(mut commands: Commands) {
 }
 
 
-fn gather_input(keys: Res<ButtonInput<KeyCode>>, mut input: ResMut<PlayerInput>) {
+
+fn gather_input(keys: Option<Res<ButtonInput<KeyCode>>>, mut input: ResMut<PlayerInput>) {
+    let Some(keys) = keys else { return; };
+
     let mut axis = Vec2::ZERO;
 
     if keys.pressed(KeyCode::KeyW) {

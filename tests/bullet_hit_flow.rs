@@ -1,10 +1,13 @@
+mod common;
+
 use avian2d::prelude::*;
 use bevy::prelude::*;
 
 #[test]
 fn bullet_hit_despawns_entities() {
-    let mut app = App::new();
-    app.add_plugins(MinimalPlugins); // no input needed here [1](https://docs.rs/bevy/latest/bevy/struct.MinimalPlugins.html)
+
+    // Configure your headless game (states + gameplay plugins)
+    let mut app = common::app_headless();
 
     // Add only the system under test (or the plugin if it only registers this system)
     app.add_systems(
