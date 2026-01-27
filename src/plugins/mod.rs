@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 
-use crate::plugins::ui::debug_hud;
+use crate::plugins::{projectiles::ProjectilesPlugin, ui::debug_hud};
 
 pub mod core;
 pub mod enemies;
@@ -23,8 +23,8 @@ pub fn register_gameplay(app: &mut App) {
     world::plugin(app);
     player::plugin(app);
     enemies::plugin(app);
-    projectiles::plugin(app);
     debug_hud::plugin(app);
+    app.add_plugins(ProjectilesPlugin);
 }
 
 /// Register render-only plugins (requires DefaultPlugins / render infra).

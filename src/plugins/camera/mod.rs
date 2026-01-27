@@ -8,7 +8,7 @@ use bevy::state::state_scoped::DespawnOnExit;
 use bevy_firefly::prelude::*;
 
 use crate::common::state::GameState;
-use crate::plugins::player::Player;
+use crate::plugins::projectiles::components::Player;
 
 #[derive(Component)]
 pub struct MainCamera;

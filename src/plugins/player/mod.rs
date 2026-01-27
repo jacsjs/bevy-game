@@ -13,10 +13,7 @@ use avian2d::prelude::*;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 
-use crate::common::{layers::Layer, state::GameState, tunables::Tunables};
-
-#[derive(Component)]
-pub struct Player;
+use crate::{common::{state::GameState, tunables::Tunables}, plugins::projectiles::{components::Player, layers::Layer}};
 
 #[derive(Resource, Default, Debug)]
 struct PlayerInput {

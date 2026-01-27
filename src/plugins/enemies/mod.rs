@@ -5,7 +5,8 @@ use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 use bevy_firefly::prelude::Occluder2d;
 
-use crate::common::{layers::Layer, state::GameState};
+use crate::common::state::GameState;
+use crate::plugins::projectiles::layers::Layer;
 
 #[derive(Component)]
 pub struct Enemy;

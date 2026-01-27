@@ -4,7 +4,8 @@ use avian2d::prelude::*;
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 
-use crate::common::{layers::Layer, state::GameState};
+use crate::common::state::GameState;
+use crate::plugins::projectiles::layers::Layer;
 
 const TILE: i32 = 64;
 const HALF_W: i32 = TILE * 16;
