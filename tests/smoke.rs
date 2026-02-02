@@ -29,12 +29,12 @@ fn player_interpolation_pipeline_is_wired() {
         app.update();
     }
 
-    // Verify at least one Player has TranslationInterpolation
+    // Verify at least one Player has TranslationExtrapolation
     let ok = app
         .world_mut()
         .query::<(
-            &bevy_game::plugins::player::Player,
-            &avian2d::interpolation::TranslationInterpolation,
+            &bevy_game::plugins::projectiles::components::Player,
+            &avian2d::prelude::TranslationExtrapolation,
         )>()
         .iter(app.world())
         .next()
@@ -42,6 +42,7 @@ fn player_interpolation_pipeline_is_wired() {
 
     assert!(
         ok,
-        "Player should opt in to interpolation via TranslationInterpolation"
+        "Player should opt in to smoothing via TranslationExtrapolation"
     );
+
 }

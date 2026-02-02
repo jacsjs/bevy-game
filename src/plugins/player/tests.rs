@@ -45,11 +45,11 @@ fn spawn_enables_translation_interpolation() {
     let mut world = World::new();
     run_system_once(&mut world, super::spawn);
 
-    // Assert that the player entity has TranslationInterpolation.
+    // Assert that the player entity has TranslationExtrapolation.
     let has = world
         .query::<(
             &super::Player,
-            &avian2d::interpolation::TranslationInterpolation,
+            &avian2d::interpolation::TranslationExtrapolation,
         )>()
         .iter(&world)
         .next()
@@ -57,7 +57,7 @@ fn spawn_enables_translation_interpolation() {
 
     assert!(
         has,
-        "Player should opt-in to interpolation via TranslationInterpolation"
+        "Player should opt-in to interpolation via TranslationExtrapolation"
     );
 }
 
