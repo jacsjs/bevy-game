@@ -6,11 +6,9 @@ pub struct Player;
 #[derive(Component)]
 pub struct Enemy;
 
-/// Marker for entities that are part of the bullet pool.
 #[derive(Component)]
 pub struct PooledBullet;
 
-/// Bullet lifecycle state (always present; avoids structural churn).
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BulletState {
     Inactive,
@@ -24,7 +22,6 @@ impl Default for BulletState {
     }
 }
 
-/// Bullet gameplay state.
 #[derive(Component, Debug, Clone)]
 pub struct Bullet {
     pub damage: i32,
@@ -34,11 +31,10 @@ pub struct Bullet {
 impl Bullet {
     pub const DEFAULT_WALL_BOUNCES: u8 = 3;
 
-    pub fn activate(damage: i32) -> Self {
-        Self {
-            damage,
-            wall_bounces_left: Self::DEFAULT_WALL_BOUNCES,
-        }
+    #[inline]
+    pub fn reset_for_fire(&mut self, damage: i32) {
+        self.damage = damage;
+        self.wall_bounces_left = Self::DEFAULT_WALL_BOUNCES;
     }
 }
 
