@@ -1,18 +1,39 @@
+//! Bullet pooling.
+//!
+//! # Invariants
+//! - `BulletPool.free` stores only `BulletEntity` (typed free list).
+//! - pooled bullet entities are spawned once and never despawned individually.
+//! - "inactive" bullets are hidden, have zero velocity, and collide with nothing.
+//!
+//! # Performance
+//! - pooling avoids spawn/despawn churn
+//! - Option A disable (collision filters empty) avoids structural enable/disable toggles
+
 use avian2d::prelude::*;
 use bevy::prelude::*;
 
-use super::components::{Bullet, BulletState, PooledBullet};
+use super::components::{Bullet, BulletEntity, BulletState, CollisionStamp, PooledBullet};
 use super::layers::Layer;
 
 #[derive(Resource, Debug)]
 pub struct BulletPool {
-    pub free: Vec<Entity>,
+    pub free: Vec<BulletEntity>,
     pub capacity: usize,
 }
 
 impl BulletPool {
     pub fn new(capacity: usize) -> Self {
         Self { free: Vec::with_capacity(capacity), capacity }
+    }
+
+    #[inline]
+    pub fn pop_free(&mut self) -> Option<BulletEntity> {
+        self.free.pop()
+    }
+
+    #[inline]
+    pub fn push_free(&mut self, e: BulletEntity) {
+        self.free.push(e)
     }
 }
 
@@ -45,6 +66,7 @@ pub fn init_bullet_pool(mut commands: Commands, mut pool: ResMut<BulletPool>) {
             PooledBullet,
             BulletState::Inactive,
             Bullet { damage: 1, wall_bounces_left: Bullet::DEFAULT_WALL_BOUNCES },
+            CollisionStamp::default(),
             Sprite {
                 color: Color::srgb(1.0, 0.85, 0.3),
                 custom_size: Some(Vec2::splat(8.0)),
@@ -61,6 +83,6 @@ pub fn init_bullet_pool(mut commands: Commands, mut pool: ResMut<BulletPool>) {
             CollisionEventsEnabled,
         )).id();
 
-        pool.free.push(e);
+        pool.push_free(BulletEntity(e));
     }
 }

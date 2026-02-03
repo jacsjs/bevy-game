@@ -1,8 +1,17 @@
+//! Collision resolve: apply gameplay rules and mark bullets for return.
+//!
+//! # Hot path design
+//! - No HashSet dedupe: we use `CollisionStamp` + `CollisionEpoch`.
+//! - Fail-fast for impossible states: if a collider is a pooled bullet, it must have bullet data.
+//!
+//! # Rule summary
+//! - World: decrement wall bounce budget; at 0 => PendingReturn
+//! - Enemy: armour gate; if armour up => wear; else apply damage and PendingReturn
+
 use avian2d::prelude::*;
-use bevy::platform::collections::HashSet;
 use bevy::prelude::*;
 
-use super::components::{Armour, Bullet, BulletState, Health, PooledBullet};
+use super::components::{Armour, Bullet, BulletState, CollisionEpoch, CollisionStamp, Health, PooledBullet};
 use super::layers::Layer;
 
 #[derive(Clone, Copy, Debug)]
@@ -33,14 +42,15 @@ fn is_in_layer(layers: &CollisionLayers, layer: Layer) -> bool {
 
 pub fn process_player_bullet_collisions(
     mut started: MessageReader<CollisionStart>,
+    mut epoch: ResMut<CollisionEpoch>,
     q_is_bullet: Query<(), With<PooledBullet>>,
-    mut q_bullet_data: Query<(&mut Bullet, &mut BulletState), With<PooledBullet>>,
+    mut q_bullet: Query<(&mut Bullet, &mut BulletState, &mut CollisionStamp), With<PooledBullet>>,
     q_layers: Query<&CollisionLayers>,
     mut q_armour: Query<&mut Armour>,
     mut q_health: Query<&mut Health>,
-    mut seen: Local<HashSet<Entity>>,
 ) {
-    seen.clear();
+    epoch.0 = epoch.0.wrapping_add(1);
+    let cur_epoch = epoch.0;
 
     for ev in started.read() {
         let (t1, t2) = targets(ev);
@@ -50,16 +60,24 @@ pub fn process_player_bullet_collisions(
         if !(b1 ^ b2) { continue; }
         let (bullet_side, other_side) = if b1 { (t1, t2) } else { (t2, t1) };
 
-        if !seen.insert(bullet_side.collider) { continue; }
+        let (mut bullet, mut state, mut stamp) =
+            q_bullet.get_mut(bullet_side.collider)
+                .expect("Bullet collider missing required pooled bullet components");
 
-        let Ok(other_layers) = q_layers.get(other_side.collider) else { continue; };
-        let Ok((mut bullet, mut state)) = q_bullet_data.get_mut(bullet_side.collider) else { continue; };
+        // Dedupe per bullet per resolve run
+        if stamp.last_epoch == cur_epoch { continue; }
+        stamp.last_epoch = cur_epoch;
+
+        let other_layers = q_layers.get(other_side.collider)
+            .expect("Collider missing CollisionLayers");
 
         if *state != BulletState::Active { continue; }
 
         if is_in_layer(other_layers, Layer::World) {
             bullet.wall_bounces_left = bullet.wall_bounces_left.saturating_sub(1);
-            if bullet.wall_bounces_left == 0 { *state = BulletState::PendingReturn; }
+            if bullet.wall_bounces_left == 0 {
+                *state = BulletState::PendingReturn;
+            }
             continue;
         }
 

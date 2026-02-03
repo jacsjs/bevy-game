@@ -1,14 +1,25 @@
-//! Camera plugin (render-only).
+//! Camera plugin (invariant-based edition).
 //!
-//! Uses `Option<Single<...>>` so the system becomes a no-op when the player or camera is missing
-//! (useful when reusing this plugin in tests or cut-down app configs).
+//! # Goal
+//! Avoid per-frame singleton scans and encode ECS aliasing constraints explicitly.
+//!
+//! The key subtlety: **B0001**.
+//! A system cannot have `Query<&Transform>` and `Query<&mut Transform>` at the same time
+//! unless Bevy can prove those queries are disjoint.
+//!
+//! We encode disjointness using `Without<...>` filters.
+//!
+//! ```text
+//! OnEnter(InGame): spawn MainCamera -> write MainCameraEntity resource
+//! PostUpdate:      follow_player uses stored handles + disjoint queries
+//! ```
 
 use bevy::prelude::*;
 use bevy::state::state_scoped::DespawnOnExit;
 use bevy_firefly::prelude::*;
 
 use crate::common::state::GameState;
-use crate::plugins::projectiles::components::Player;
+use crate::plugins::projectiles::components::{MainCameraEntity, Player, PlayerEntity};
 
 #[derive(Component)]
 pub struct MainCamera;
@@ -17,31 +28,40 @@ pub fn plugin(app: &mut App) {
     app.add_systems(OnEnter(GameState::InGame), spawn_camera)
         .add_systems(
             PostUpdate,
-            follow_player.before(TransformSystems::Propagate),
+            follow_player
+                .before(TransformSystems::Propagate)
+                .run_if(in_state(GameState::InGame)),
         );
 }
 
 fn spawn_camera(mut commands: Commands) {
-    commands.spawn((
-        Name::new("MainCamera"),
-        Camera2d,
-        MainCamera,
-        FireflyConfig::default(),
-        Transform::from_xyz(0.0, 0.0, 999.0),
-        DespawnOnExit(GameState::InGame),
-    ));
+    let e = commands
+        .spawn((
+            Name::new("MainCamera"),
+            Camera2d,
+            MainCamera,
+            FireflyConfig::default(),
+            Transform::from_xyz(0.0, 0.0, 999.0),
+            DespawnOnExit(GameState::InGame),
+        ))
+        .id();
+
+    commands.insert_resource(MainCameraEntity(Some(e)));
 }
 
 fn follow_player(
+    player_e: Res<PlayerEntity>,
+    cam_e: Res<MainCameraEntity>,
+    // Disjointness proof: Player entities are not MainCamera entities.
     q_player: Query<&Transform, (With<Player>, Without<MainCamera>)>,
+    // Disjointness proof: MainCamera entities are not Player entities.
     mut q_cam: Query<&mut Transform, (With<MainCamera>, Without<Player>)>,
 ) {
-    let Ok(tf_player) = q_player.single() else {
-        return;
-    };
-    let Ok(mut tf_cam) = q_cam.single_mut() else {
-        return;
-    };
+    let player = player_e.0.expect("PlayerEntity not set");
+    let cam = cam_e.0.expect("MainCameraEntity not set");
+
+    let tf_player = q_player.get(player).expect("PlayerEntity invalid");
+    let mut tf_cam = q_cam.get_mut(cam).expect("MainCameraEntity invalid");
 
     tf_cam.translation.x = tf_player.translation.x;
     tf_cam.translation.y = tf_player.translation.y;
