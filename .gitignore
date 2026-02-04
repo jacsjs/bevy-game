@@ -3,6 +3,8 @@
 debug
 target
 
+Cargo.lock
+
 # Dont include the built book; users can do that themselves
 docs/book
 

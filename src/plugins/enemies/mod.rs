@@ -371,7 +371,7 @@ fn spawn_targets(mut commands: Commands) {
     let initial_armour: u16 = 3;
     let initial_hp: i32 = 5;
 
-    for (i, x) in [-200.0, 0.0, 200.0].into_iter().enumerate() {
+    for (i, x) in [-400.0, -200.0, 0.0, 200.0, 400.0].into_iter().enumerate() {
         commands.spawn((
             Name::new(format!("EnemyTarget{i}")),
             Enemy,
